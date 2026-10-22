@@ -1,0 +1,53 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Builds dist/monokulo.zip (and its .sha256): the plugin as WordPress's
+ * Add Plugins > Upload Plugin expects it, its files in one folder,
+ * monokulo/: monokulo.php, includes/, assets/ and LICENSE. Nothing else of
+ * this repository (tests, Docker, Composer) goes in.
+ *
+ * WordPress names the plugin's folder after the zip's top folder, not the
+ * zip's file name, so the folder stays monokulo/ whatever the file is
+ * called. The version is in the plugin header and in the release's name.
+ *
+ * Entries are sorted and dated 2026-01-01, so the same source always gives
+ * the same zip.
+ */
+$root = dirname(__DIR__);
+$dist = $root . '/dist';
+$zipPath = $dist . '/monokulo.zip';
+
+if (!is_dir($dist)) {
+	mkdir($dist);
+}
+@unlink($zipPath);
+
+$files = ['monokulo.php', 'LICENSE'];
+foreach (['includes', 'assets'] as $dir) {
+	$iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/' . $dir, FilesystemIterator::SKIP_DOTS));
+	foreach ($iterator as $file) {
+		if ($file->isFile()) {
+			$files[] = substr($file->getPathname(), strlen($root) + 1);
+		}
+	}
+}
+sort($files, SORT_STRING);
+
+$zip = new ZipArchive();
+if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::EXCL) !== true) {
+	fwrite(STDERR, "cannot create $zipPath\n");
+	exit(1);
+}
+$time = gmmktime(0, 0, 0, 1, 1, 2026);
+foreach ($files as $name) {
+	$entry = 'monokulo/' . $name;
+	$zip->addFile($root . '/' . $name, $entry);
+	$zip->setMtimeName($entry, $time);
+	$zip->setCompressionName($entry, ZipArchive::CM_DEFLATE);
+	$zip->setExternalAttributesName($entry, ZipArchive::OPSYS_UNIX, 0100644 << 16);
+}
+$zip->close();
+
+$hash = hash_file('sha256', $zipPath);
+file_put_contents($zipPath . '.sha256', $hash . "  monokulo.zip\n");
+printf("dist/monokulo.zip (%s, %d files): %s\n", trim((string)file_get_contents($root . '/VERSION')), count($files), $hash);

@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name:       Monokulo for WooCommerce
- * Plugin URI:        https://github.com/monokulo/scanner
+ * Plugin URI:        https://github.com/OceanEilonwy/monokulo-woocommerce
  * Description:       Accept Monero at checkout via Monokulo, the hosted,
  *                     non-custodial payment gateway built on scanner.
  *                     No spend key ever touches this server or ours - only a

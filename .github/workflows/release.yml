@@ -1,0 +1,48 @@
+# A version tag (v0.3.0) publishes a GitHub release with the plugin:
+# monokulo.zip and its .sha256. The zip is installed in the test shop and
+# the tests run first.
+#
+# The zip's top folder is monokulo/, which WordPress names the plugin's
+# folder after, whatever the file is called. The release's title carries
+# the version.
+#
+# Publishing to the wordpress.org plugin directory is done by hand.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PHP_VERSION: '8.4'
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the version
+        run: |
+          version=$(cat VERSION)
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME is not v$version (VERSION)" >&2; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Start WordPress
+        run: scripts/test up
+      - name: Build the zip, install it in the shop, test
+        run: scripts/test all
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          Monokulo payment gateway for WooCommerce (WordPress 6.4 or newer, WooCommerce 8.0 or newer, PHP 8.1 or newer).
+
+          Install: in WordPress, Plugins > Add New > Upload Plugin, upload \`monokulo.zip\` and activate it, then connect it under WooCommerce > Settings > Payments > Monokulo. See the README.
+
+          SHA-256: \`$(cut -d' ' -f1 dist/monokulo.zip.sha256)\`
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/monokulo.zip dist/monokulo.zip.sha256 \
+            --title "Monokulo for WooCommerce $VERSION" --notes-file notes.md

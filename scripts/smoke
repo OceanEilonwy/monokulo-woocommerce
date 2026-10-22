@@ -1,0 +1,52 @@
+#!/bin/sh
+# Runs the smoke suite against a fresh Monokulo on this machine's network
+# (docker/monokulo-smoke.toml), then stops it. The shop must be up and the
+# plugin installed (scripts/test up && scripts/test install).
+#
+# Which Monokulo:
+#   MONOKULO_BIN=/path/to/monokulo   a binary built from the pinned commit, or
+#   MONOKULO_IMAGE=ghcr.io/...       its Docker image (the default:
+#                                    monokulo:smoke, built by CI from the
+#                                    commit in tests/vectors/PIN)
+set -eu
+cd "$(dirname "$0")/.."
+
+data=$(mktemp -d)
+key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+url=http://localhost:8081
+
+if [ -n "${MONOKULO_BIN:-}" ]; then
+	MONOKULO_ENCRYPTION_KEY=$key "$MONOKULO_BIN" --options docker/monokulo-smoke.toml \
+		--database-path "$data/monokulo.db" --logging-format json > "$data/monokulo.log" 2>&1 &
+	pid=$!
+	stop() { kill "$pid" 2>/dev/null || true; }
+else
+	chmod 777 "$data"
+	docker run -d --rm --name monokulo-woocommerce-smoke --network host \
+		-e MONOKULO_ENCRYPTION_KEY="$key" \
+		-v "$PWD/docker/monokulo-smoke.toml:/etc/monokulo.toml:ro" -v "$data:/data" \
+		"${MONOKULO_IMAGE:-monokulo:smoke}" monokulo --options /etc/monokulo.toml \
+		--database-path /data/monokulo.db --logging-format json > /dev/null
+	stop() { docker logs monokulo-woocommerce-smoke > "$data/monokulo.log" 2>&1 || true; docker stop monokulo-woocommerce-smoke > /dev/null 2>&1 || true; }
+fi
+
+cleanup() {
+	status=$?
+	stop
+	if [ "$status" != 0 ]; then
+		echo "--- Monokulo's log ---"
+		tail -n 100 "$data/monokulo.log" 2>/dev/null || true
+	fi
+	rm -rf "$data"
+	exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+for i in $(seq 1 60); do
+	if curl -fs -o /dev/null "$url/status" || curl -s -o /dev/null -w '%{http_code}' "$url/" | grep -q 302; then
+		break
+	fi
+	sleep 1
+done
+
+MONOKULO_URL=$url scripts/test smoke "$@"
