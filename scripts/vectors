@@ -1,0 +1,48 @@
+#!/bin/sh
+# Monokulo's published webhook vectors, vendored in tests/vectors and pinned
+# to a monokulo commit in tests/vectors/PIN.
+#
+#   scripts/vectors check            the vendored file is the one at the pinned commit
+#   scripts/vectors pin <commit>     vendor the file at <commit> and pin it
+#
+# MONOKULO_READ_TOKEN, when set, is sent to GitHub (for a private
+# repository).
+set -eu
+cd "$(dirname "$0")/.."
+
+. tests/vectors/PIN
+slug=${repository#https://github.com/}
+
+fetch() {
+	url="https://raw.githubusercontent.com/$slug/$1/$path"
+	if [ -n "${MONOKULO_READ_TOKEN:-}" ]; then
+		curl -fsSL -H "Authorization: Bearer $MONOKULO_READ_TOKEN" "$url"
+	else
+		curl -fsSL "$url"
+	fi
+}
+
+case "${1:-check}" in
+check)
+	tmp=$(mktemp)
+	trap 'rm -f "$tmp"' EXIT
+	fetch "$commit" > "$tmp"
+	if cmp -s "$tmp" tests/vectors/webhook-vectors.json; then
+		echo "tests/vectors/webhook-vectors.json matches $slug at $commit"
+	else
+		echo "tests/vectors/webhook-vectors.json differs from $slug at $commit:" >&2
+		diff "$tmp" tests/vectors/webhook-vectors.json >&2 || true
+		exit 1
+	fi
+	;;
+pin)
+	new=${2:?usage: scripts/vectors pin <commit>}
+	fetch "$new" > tests/vectors/webhook-vectors.json
+	printf 'repository=%s\ncommit=%s\npath=%s\n' "$repository" "$new" "$path" > tests/vectors/PIN
+	echo "pinned to $new"
+	;;
+*)
+	echo "usage: scripts/vectors check|pin <commit>" >&2
+	exit 2
+	;;
+esac

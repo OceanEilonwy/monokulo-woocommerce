@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The smoke test: the installed plugin in the test shop against a real
+    Monokulo (MONOKULO_URL), over HTTP, outside WordPress's test library.
+    scripts/smoke starts the Monokulo and runs it.
+-->
+<phpunit
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+    bootstrap="vendor/autoload.php"
+    colors="true"
+    failOnWarning="true"
+    failOnRisky="true"
+    beStrictAboutOutputDuringTests="true"
+>
+    <testsuites>
+        <testsuite name="smoke">
+            <directory suffix="Test.php">./tests/Smoke/</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

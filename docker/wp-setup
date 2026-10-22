@@ -1,0 +1,51 @@
+#!/bin/sh
+# Sets up the test shop, once the database is up (scripts/test up runs it):
+# WordPress installed at WP_URL with WooCommerce active, a product to buy,
+# guest checkout, and the test database the PHPUnit suite installs into.
+# The plugin itself is installed from its zip by scripts/test install.
+#
+# Admin: user admin, password admin-password-1.
+set -eu
+
+port=${DB_PORT:-33062}
+db() {
+	mariadb -h 127.0.0.1 -P "$port" -u root -pwordpress-root "$@"
+}
+wp() {
+	command wp --allow-root --path=/var/www/html "$@"
+}
+
+for i in $(seq 1 60); do
+	db -e 'SELECT 1' > /dev/null 2>&1 && break
+	sleep 1
+done
+db -e "CREATE DATABASE IF NOT EXISTS wordpress_tests; GRANT ALL ON wordpress_tests.* TO 'wordpress'@'%';"
+
+if [ ! -f /var/www/html/wp-config.php ]; then
+	wp config create --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost="127.0.0.1:$port" --skip-check
+	wp config set WP_DEBUG true --raw
+	wp config set WP_DEBUG_LOG true --raw
+	wp config set WP_DEBUG_DISPLAY false --raw
+fi
+
+if ! wp core is-installed 2> /dev/null; then
+	wp core install --url="$WP_URL" --title='Monokulo test shop' --admin_user=admin \
+		--admin_password=admin-password-1 --admin_email=admin@example.test --skip-email
+fi
+
+mkdir -p /var/www/html/wp-content/mu-plugins
+cp /usr/src/mu-plugins/*.php /var/www/html/wp-content/mu-plugins/
+
+wp plugin activate woocommerce
+# A new WooCommerce store starts in "coming soon" mode, which hides the shop
+# from customers.
+wp option update woocommerce_coming_soon no
+wp option update woocommerce_currency USD
+wp option update woocommerce_default_country 'US:CA'
+wp option update woocommerce_enable_guest_checkout yes
+if [ -z "$(wp wc product list --sku=mug --field=id --user=admin)" ]; then
+	wp wc product create --user=admin --name='Blue mug' --sku=mug --regular_price=12.50 --virtual=true > /dev/null
+fi
+
+chown -R www-data:www-data /var/www/html
+chmod -R a+rwX /var/www/html/wp-content

@@ -1,47 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    PHPUnit config for the Monokulo WooCommerce plugin's own test
-    suite. Deliberately just this one plugin's tests, not the whole
-    workspace - the Rust crates already have their own `cargo test` story,
-    and there's no reason for a PHP test runner to know about them.
+    The plugin's tests, booted inside WordPress with WooCommerce by
+    WordPress's own PHPUnit test library (tests/bootstrap.php), in the
+    WordPress container: scripts/test wordpress. Outbound HTTP to Monokulo
+    is answered by `pre_http_request`, and webhooks are checked against
+    Monokulo's published vectors (tests/vectors).
+
+    The smoke test against a real Monokulo has its own config,
+    phpunit.smoke.xml (scripts/smoke).
 -->
 <phpunit
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
     bootstrap="tests/bootstrap.php"
     colors="true"
+    failOnWarning="true"
+    failOnRisky="true"
     beStrictAboutOutputDuringTests="true"
     beStrictAboutTestsThatDoNotTestAnything="true"
 >
     <testsuites>
-        <testsuite name="monokulo">
+        <testsuite name="wordpress">
             <!--
-                suffix="Test.php" (filename equals class name, e.g.
-                GatewayRegistrationTest.php / class GatewayRegistrationTest) -
-                not a style preference. PHPUnit 10's own TestSuiteLoader
-                requires a discovered file's declared class name to
-                case-insensitively end with the file's own basename (see
-                tests/GatewayRegistrationTest.php's own doc comment for the
-                real failure this fixes, found by hitting it directly against
-                this exact PHPUnit version rather than assumed from an older
-                WordPress-core-style "test-*.php" convention).
+                suffix="Test.php": PHPUnit wants a file's class named as the
+                file is (GatewayRegistrationTest.php declares
+                GatewayRegistrationTest).
             -->
             <directory suffix="Test.php">./tests/</directory>
+            <exclude>./tests/Smoke</exclude>
         </testsuite>
     </testsuites>
-    <!--
-        The "live-monokulo" group (tests/LiveMonokuloIntegrationTest.php)
-        needs a real, running Monokulo (and engine) reachable from inside
-        wp-env's own Docker network - excluded from the default run for the identical reason
-        tests/e2e_stagenet.rs on the Rust side is marked ignored by default and
-        run only explicitly: a real network dependency this project's default,
-        hermetic test run should never silently depend on. Run it explicitly
-        with the phpunit "group" CLI option set to live-monokulo, once a real
-        Monokulo is up (see that test file's own doc comment for how).
-    -->
-    <groups>
-        <exclude>
-            <group>live-monokulo</group>
-        </exclude>
-    </groups>
+    <coverage>
+        <include>
+            <file>monokulo.php</file>
+            <directory suffix=".php">includes</directory>
+        </include>
+    </coverage>
 </phpunit>

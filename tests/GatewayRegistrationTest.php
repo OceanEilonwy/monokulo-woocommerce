@@ -38,10 +38,8 @@
  * resolved against WooCommerce's own real source, not guessed** - read
  * directly from the installed copy at
  * `wp-content/plugins/woocommerce/includes/class-wc-payment-gateways.php`
- * (the exact file this test's own WordPress install downloads, per
- * `.wp-env.json`'s `"plugins"` entry pointing at
- * `woocommerce.latest-stable.zip` - not a vendored guess, the real package
- * `wp-env` pulls down for this environment):
+ * (the exact file this test's own WordPress install downloads, the
+ * WooCommerce release `docker/Dockerfile` pins - not a vendored guess):
  *
  * - `WC_Payment_Gateways::payment_gateways()` returns `$this->payment_gateways`
  *   directly - the full set of instantiated gateway objects built from every

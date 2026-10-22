@@ -1,0 +1,62 @@
+#!/bin/sh
+# Runs the plugin's tests in the WordPress container (docker/compose.yaml),
+# as your own user so files it writes in the repository stay yours.
+#
+#   scripts/test up                 start WordPress with WooCommerce (PHP_VERSION=8.1|8.4|8.5)
+#   scripts/test install            build the zip and install it in the shop with WP-CLI
+#   scripts/test wordpress|smoke [phpunit args]
+#   scripts/test all                install, then the wordpress suite
+#   scripts/test down               stop and remove the containers
+#
+# Coverage: COVERAGE=1 has the wordpress suite write coverage/summary.txt
+# and coverage/html/ (pcov).
+set -eu
+cd "$(dirname "$0")/.."
+
+compose() {
+	docker compose -f docker/compose.yaml "$@"
+}
+
+run() {
+	# umask 0: files the tests make in WordPress (uploads, logs) stay
+	# writable by Apache, as Apache's stay writable by the tests.
+	compose exec -T --user "$(id -u):$(id -g)" -e HOME=/tmp -e MONOKULO_URL="${MONOKULO_URL:-}" -w /repo wordpress sh -c 'umask 0000 && exec "$@"' sh "$@"
+}
+
+case "${1:-all}" in
+up)
+	compose up -d --build --wait
+	compose exec -T wordpress wp-setup
+	run composer install --no-interaction --no-progress
+	;;
+install)
+	run php scripts/build-zip
+	compose exec -T wordpress sh -c 'wp --allow-root --path=/var/www/html plugin install /repo/dist/monokulo.zip --force --activate && chown -R www-data:www-data /var/www/html/wp-content/plugins/monokulo'
+	compose exec -T wordpress wp --allow-root --path=/var/www/html plugin is-active monokulo
+	;;
+down)
+	compose down -v
+	;;
+all)
+	"$0" install
+	"$0" wordpress
+	;;
+wordpress)
+	shift
+	if [ "${COVERAGE:-}" = 1 ]; then
+		rm -rf coverage
+		run php -d pcov.enabled=1 vendor/bin/phpunit --coverage-text=coverage/summary.txt --coverage-html coverage/html "$@"
+		cat coverage/summary.txt
+	else
+		run vendor/bin/phpunit "$@"
+	fi
+	;;
+smoke)
+	shift
+	run vendor/bin/phpunit -c phpunit.smoke.xml "$@"
+	;;
+*)
+	echo "usage: scripts/test up|install|wordpress|smoke|all|down" >&2
+	exit 2
+	;;
+esac

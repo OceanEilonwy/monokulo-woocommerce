@@ -4,29 +4,25 @@
  *
  * This follows the standard WordPress plugin PHPUnit bootstrap shape (the
  * same one WordPress core's own plugin-developer handbook documents, and the
- * one `wp-env`'s own README section "Using included WordPress PHPUnit test
- * files" assumes): load the WP core test scaffolding's helper functions
- * first, register a `muplugins_loaded` callback that manually `require`s the
- * plugin(s) this suite needs (since PHPUnit's test run bypasses WordPress's
- * normal plugin-activation database bookkeeping entirely - there is no
- * `wp_options` row saying "monokulo is active" for the test run to
- * discover on its own), then hand off to the real WP core bootstrap, which
- * installs a fresh test database and turns control over to PHPUnit.
+ * one WordPress's own `wp scaffold plugin-tests` sets up): load the WP core
+ * test scaffolding's helper functions first, register a `muplugins_loaded`
+ * callback that manually `require`s the plugin(s) this suite needs (since
+ * PHPUnit's test run bypasses WordPress's normal plugin-activation
+ * database bookkeeping entirely - there is no `wp_options` row saying
+ * "monokulo is active" for the test run to discover on its own), then
+ * hand off to the real WP core bootstrap, which installs a fresh test
+ * database and turns control over to PHPUnit.
  *
  * @package Monokulo
  */
 
-// `wp-env`'s `tests-cli`/`tests-wordpress` containers set `WP_TESTS_DIR` to
-// `/wordpress-phpunit` (confirmed by reading the installed `@wordpress/env`
-// package's own `lib/runtime/docker/build-docker-compose-config.js` directly,
-// not assumed from its README, which documents the variable's existence but
-// not this exact path) - that's the WordPress core PHPUnit test suite
+// The WordPress container (docker/Dockerfile) sets `WP_TESTS_DIR` to
+// `/wordpress-phpunit`: WordPress core's PHPUnit test library
 // (`includes/functions.php`, `includes/bootstrap.php`, `WP_UnitTestCase`,
-// etc.), bundled into the container specifically so a plugin's own test suite
-// never has to fetch or manage a copy of it itself. The `/tmp/...` fallback
-// below is the same one WordPress core's own plugin-developer handbook
-// documents for running outside `wp-env` (e.g. a bare `svn co` of the test
-// library) - kept so this bootstrap isn't silently `wp-env`-only.
+// etc.) from wordpress-develop at the installed WordPress's version, with
+// docker/wp-tests-config.php beside it. The `/tmp/...` fallback below is the
+// one WordPress core's own plugin-developer handbook documents for running
+// elsewhere (e.g. a bare `svn co` of the test library).
 $_tests_dir = getenv( 'WP_TESTS_DIR' );
 if ( ! $_tests_dir ) {
 	$_tests_dir = '/tmp/wordpress-tests-lib';
@@ -36,7 +32,7 @@ if ( ! file_exists( $_tests_dir . '/includes/functions.php' ) ) {
 	fwrite(
 		STDERR,
 		"Could not find {$_tests_dir}/includes/functions.php - is WP_TESTS_DIR set correctly? " .
-		"(expected to be running inside wp-env's tests-cli container)\n"
+		"(expected to be running inside the WordPress container: scripts/test wordpress)\n"
 	);
 	exit( 1 );
 }
@@ -81,8 +77,7 @@ function _monokulo_manually_load_plugins() {
 	if ( ! file_exists( $woocommerce_main_file ) ) {
 		fwrite(
 			STDERR,
-			"WooCommerce not found at {$woocommerce_main_file} - is it listed in .wp-env.json's " .
-			"\"plugins\" array and did `wp-env start` finish successfully?\n"
+			"WooCommerce not found at {$woocommerce_main_file} - did `scripts/test up` finish successfully?\n"
 		);
 		exit( 1 );
 	}
@@ -91,6 +86,20 @@ function _monokulo_manually_load_plugins() {
 	require dirname( __DIR__ ) . '/monokulo.php';
 }
 tests_add_filter( 'muplugins_loaded', '_monokulo_manually_load_plugins' );
+
+/**
+ * Installs WooCommerce in the test database, as activating it would: its
+ * tables, options and roles (`manage_woocommerce`). WordPress's test
+ * library installs WordPress afresh but knows nothing of WooCommerce, so
+ * this does what WooCommerce's own test bootstrap does. Roles are read
+ * again afterwards, since WordPress loaded them before the install.
+ */
+function _monokulo_install_woocommerce() {
+	WC_Install::install();
+	$GLOBALS['wp_roles'] = null;
+	wp_roles();
+}
+tests_add_filter( 'setup_theme', '_monokulo_install_woocommerce' );
 
 /**
  * The `X-Monokulo-Signature` header Monokulo sends for `$body`, signed at

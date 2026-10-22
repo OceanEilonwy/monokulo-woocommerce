@@ -1,19 +1,25 @@
 {
     "name": "monokulo/woocommerce",
-    "description": "WooCommerce payment gateway for Monokulo - a thin PHP adapter over the scanner Rust engine (see docs/WOOCOMMERCE_ROADMAP.md and docs/WOOCOMMERCE_WBS.md in the repo root). This composer.json exists only for the plugin's own PHPUnit test suite and its dev-time dependencies - the plugin itself has zero runtime PHP dependencies beyond WordPress/WooCommerce, deliberately, since every real decision (order state, exchange rates, chain scanning) lives in the Rust engine, not here.",
+    "description": "Monokulo payment gateway for WooCommerce: accept Monero through your own self-hosted Monokulo. This file is for the plugin's tests only: the plugin has no runtime dependencies beyond WordPress and WooCommerce.",
     "license": "GPL-2.0-or-later",
     "type": "wordpress-plugin",
     "require": {
         "php": ">=8.1"
     },
     "require-dev": {
-        "yoast/phpunit-polyfills": "^4.0",
-        "phpunit/phpunit": "^9.6"
+        "phpunit/phpunit": "^9.6",
+        "yoast/phpunit-polyfills": "^4.0"
     },
-    "minimum-stability": "stable",
+    "autoload-dev": {
+        "psr-4": {
+            "Monokulo\\WooCommerce\\Tests\\Smoke\\": "tests/Smoke/"
+        }
+    },
     "config": {
         "platform": {
-            "php": "8.5.0"
-        }
-    }
+            "php": "8.1.0"
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
 }
