@@ -103,6 +103,22 @@ function monokulo_add_gateway_class( $gateways ) {
 add_filter( 'woocommerce_payment_gateways', 'monokulo_add_gateway_class' );
 
 /**
+ * Builds WooCommerce's gateways when the browser comes back from Monokulo's
+ * connect flow (`admin-post.php?action=monokulo_connect_return`). The
+ * gateway hooks its handler for that action in its constructor, and
+ * WooCommerce builds its gateways only when something asks for them, which
+ * nothing on an `admin-post.php` request does: without this, WordPress finds
+ * no handler and answers 400. Runs first (priority 0), so the handler the
+ * gateway adds at the default priority runs on this same request.
+ */
+function monokulo_load_gateways_for_connect_return() {
+	if ( function_exists( 'WC' ) ) {
+		WC()->payment_gateways();
+	}
+}
+add_action( 'admin_post_monokulo_connect_return', 'monokulo_load_gateways_for_connect_return', 0 );
+
+/**
  * Tells WooCommerce managers, on every admin screen, when this store was
  * connected by an older plugin version and must reconnect before it can
  * take Monero payments again (see `WC_Gateway_Monokulo::CONNECTION_VERSION`).
