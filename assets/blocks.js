@@ -5,11 +5,11 @@
  */
 ( function () {
 	const { registerPaymentMethod } = window.wc.wcBlocksRegistry;
-	const { getSetting } = window.wc.wcSettings;
+	const { getPaymentMethodData } = window.wc.wcSettings;
 	const { createElement } = window.wp.element;
 	const { decodeEntities } = window.wp.htmlEntities;
 
-	const settings = getSetting( 'monokulo_data', {} );
+	const settings = getPaymentMethodData( 'monokulo', {} );
 	const title = decodeEntities( settings.title || '' );
 	const description = decodeEntities( settings.description || '' );
 
