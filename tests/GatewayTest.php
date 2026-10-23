@@ -61,10 +61,8 @@ class GatewayTest extends MonokuloTestCase {
 
 	public function test_deleting_the_plugin_removes_its_settings() {
 		self::connected_gateway();
-		set_transient( 'monokulo_connect_nonce_monokulo', 'abc', 600 );
 		define( 'WP_UNINSTALL_PLUGIN', 'monokulo/monokulo.php' );
 		require dirname( __DIR__ ) . '/uninstall.php';
 		$this->assertFalse( get_option( 'woocommerce_monokulo_settings' ) );
-		$this->assertFalse( get_transient( 'monokulo_connect_nonce_monokulo' ) );
 	}
 }

@@ -60,6 +60,30 @@ class CheckoutTest extends MonokuloTestCase {
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'mko_deadbeef', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
 		$this->assertSame( 'pending', $order->get_status(), 'Not paid until Monokulo says so.' );
+		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/pay/pk_test/orders/mko_deadbeef', self::notes( $order ) );
+	}
+
+	/**
+	 * Paying again with the same total gets the same Monokulo order; a new
+	 * total gets a new one, and the order remembers both.
+	 */
+	public function test_a_changed_total_makes_a_new_monokulo_order_and_keeps_the_old_one() {
+		$order   = self::order();
+		$gateway = self::connected_gateway();
+		$this->monokulo_answers( self::created( 'mko_first' ) );
+		$gateway->process_payment( $order->get_id() );
+		$gateway->process_payment( $order->get_id() );
+
+		$order = wc_get_order( $order->get_id() );
+		$order->set_total( '50.00' );
+		$order->save();
+		$this->monokulo_answers( self::created( 'mko_second' ) );
+		$gateway->process_payment( $order->get_id() );
+
+		$this->assertStringEndsWith( ':50.00:USD', json_decode( end( $this->sent )['args']['body'], true )['idempotency_key'] );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( 'mko_second', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+		$this->assertSame( array( 'mko_first', 'mko_second' ), array_values( wp_list_pluck( $order->get_meta( WC_Gateway_Monokulo::META_ORDER_IDS, false ), 'value' ) ) );
 	}
 
 	public function test_a_customer_on_the_shops_onion_address_pays_on_monokulos() {
@@ -118,13 +142,13 @@ class CheckoutTest extends MonokuloTestCase {
 	 */
 	public function test_a_refused_or_failed_order_is_explained_and_logged() {
 		$cases = array(
-			'unreachable' => array( new WP_Error( 'http_request_failed', 'cURL error 7' ), 'Could not reach Monokulo', 'cURL error 7' ),
+			'unreachable' => array( new WP_Error( 'http_request_failed', 'cURL error 7' ), 'could not be reached', 'cURL error 7' ),
 			'HTTP 401'    => array( self::response( 401, array( 'error' => 'detail 401' ) ), 'not available for this store', 'reconnect the plugin' ),
 			'HTTP 403'    => array( self::response( 403, array( 'error' => 'detail 403' ) ), 'not available for this store', 'verified-domain' ),
-			'HTTP 404'    => array( self::response( 404, array( 'error' => 'detail 404' ) ), 'could not start this payment', 'reconnect the plugin' ),
+			'HTTP 404'    => array( self::response( 404, array( 'error' => 'detail 404' ) ), 'could not be started', 'reconnect the plugin' ),
 			'HTTP 429'    => array( self::response( 429, array( 'error' => 'detail 429' ) ), 'busy right now', 'rate limited' ),
-			'HTTP 400'    => array( self::response( 400, array( 'error' => 'unsupported currency' ) ), 'could not start this payment', 'unsupported currency' ),
-			'not json'    => array( self::response( 200, '<html>Checking your browser</html>' ), 'unexpected response', 'Checking your browser' ),
+			'HTTP 400'    => array( self::response( 400, array( 'error' => 'unsupported currency' ) ), 'could not be started', 'unsupported currency' ),
+			'not json'    => array( self::response( 200, '<html>Checking your browser</html>' ), 'could not be started', 'Checking your browser' ),
 		);
 		foreach ( $cases as $case => list( $answer, $customer, $merchant ) ) {
 			$this->logged = array();

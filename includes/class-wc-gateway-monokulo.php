@@ -72,9 +72,15 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const SIGNATURE_TOLERANCE_SECONDS = 300;
 
 	/**
-	 * Order meta: the Monokulo order the customer was sent to pay.
+	 * Order meta: the Monokulo order the customer was last sent to pay.
 	 */
 	const META_ORDER_ID = '_monokulo_order_id';
+
+	/**
+	 * Order meta, one row each: every Monokulo order made for the order. A
+	 * changed total makes a new one.
+	 */
+	const META_ORDER_IDS = '_monokulo_order_ids';
 
 	/**
 	 * Order meta: the webhook events already applied, as a JSON list.
@@ -92,14 +98,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const FORWARDED_LEVELS = array( 'warning', 'error', 'critical', 'alert', 'emergency' );
 
 	/**
-	 * The WooCommerce status for each Monokulo status that isn't paid.
+	 * The WooCommerce status each unpaid Monokulo event moves an order to.
 	 */
 	const STATUS_MAP = array(
-		'pending'     => 'pending',
-		'unconfirmed' => 'on-hold',
-		'confirming'  => 'on-hold',
-		'partial'     => 'on-hold',
-		'expired'     => 'cancelled',
+		'order.pending'     => 'pending',
+		'order.unconfirmed' => 'on-hold',
+		'order.confirming'  => 'on-hold',
+		'order.partial'     => 'on-hold',
+		'order.expired'     => 'cancelled',
 	);
 
 	/**
@@ -168,10 +174,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$this->icon               = plugins_url( 'assets/monokulo-icon.svg', MONOKULO_PLUGIN_FILE );
 		$this->has_fields         = false;
 		$this->method_title       = __( 'Monokulo', 'monokulo' );
-		$this->method_description = __(
-			'Accept Monero at checkout without ever holding customer funds or your own spend key - Monokulo watches the chain for you and only ever needs a view key. Connect your wallet to enable this gateway for real.',
-			'monokulo'
-		);
+		$this->method_description = __( 'Take Monero at checkout through Monokulo. Monokulo only ever holds a view key: payments go straight to your wallet.', 'monokulo' );
 		$this->supports           = array( 'products' );
 
 		$this->init_form_fields();
@@ -197,77 +200,74 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'enabled'        => array(
 				'title'   => __( 'Enable/Disable', 'monokulo' ),
 				'type'    => 'checkbox',
-				'label'   => __( 'Enable Monero payments via Monokulo', 'monokulo' ),
+				'label'   => __( 'Offer Monero at checkout', 'monokulo' ),
 				'default' => 'no',
 			),
 			'title'          => array(
 				'title'       => __( 'Title', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'The label the customer sees for this payment method at checkout.', 'monokulo' ),
+				'description' => __( 'What customers see at checkout.', 'monokulo' ),
 				'default'     => __( 'Monero (via Monokulo)', 'monokulo' ),
 				'desc_tip'    => true,
 			),
 			'description'    => array(
 				'title'       => __( 'Description', 'monokulo' ),
 				'type'        => 'textarea',
-				'description' => __( 'The explanatory text the customer sees for this payment method at checkout.', 'monokulo' ),
-				'default'     => __( 'Pay with Monero. You will be redirected to a secure Monokulo payment page to complete your purchase.', 'monokulo' ),
+				'description' => __( 'Shown under the title at checkout.', 'monokulo' ),
+				'default'     => __( 'Pay with Monero. You pay on a secure Monokulo payment page next.', 'monokulo' ),
 				'desc_tip'    => true,
 			),
 			'connection'     => array(
 				'title'       => __( 'Connection', 'monokulo' ),
 				'type'        => 'title',
-				'description' => __( 'Click below to connect your Monero wallet through Monokulo - this fills in everything below automatically and enables this gateway.', 'monokulo' ),
+				'description' => __( 'Connect fills in the checkout address and the store\'s keys, and turns Monero on.', 'monokulo' ),
 			),
 			'address'        => array(
 				'title'       => __( 'Monokulo address', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'The Monokulo your store is on: the public one at monokulo.com, or your own. Save after changing it, then Connect.', 'monokulo' ),
+				'description' => __( 'Where your Monokulo is, as your browser opens it: https://monokulo.com, or your own Monokulo\'s address. Save it before you Connect.', 'monokulo' ),
 				'default'     => self::DEFAULT_MONOKULO_ADDRESS,
 				'placeholder' => self::DEFAULT_MONOKULO_ADDRESS,
 				'desc_tip'    => true,
 			),
 			'connect'        => array(
+				'title'       => __( 'Store', 'monokulo' ),
 				'type'        => 'monokulo_connect',
-				'description' => __( 'You will be sent to Monokulo to sign in (or sign up) and confirm the connection, then returned here automatically.', 'monokulo' ),
+				'description' => __( 'You sign in to Monokulo (or sign up), pick or set up the store, and come back here.', 'monokulo' ),
 			),
 			'endpoint'       => array(
 				'title'       => __( 'Checkout address', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'Where orders are made and customers pay, as Monokulo said when this store connected. Filled in automatically by Connect above.', 'monokulo' ),
+				'description' => __( 'Where orders are made and customers pay. Connect fills it in.', 'monokulo' ),
 				'default'     => '',
-				'placeholder' => 'https://pay.example.com',
 				'desc_tip'    => true,
 			),
 			'onion_endpoint' => array(
-				'title'       => __( 'Monokulo onion address', 'monokulo' ),
+				'title'       => __( 'Onion checkout address', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'Where customers shopping on this shop\'s own .onion address are sent to pay, so they stay on Tor. Filled in automatically by Connect above; empty when Monokulo has no onion address.', 'monokulo' ),
+				'description' => __( 'Where customers on this shop\'s .onion address pay, so they stay on Tor. Connect fills it in; it is empty when your Monokulo has no onion address.', 'monokulo' ),
 				'default'     => '',
-				'placeholder' => 'http://abc...xyz.onion',
 				'desc_tip'    => true,
 			),
 			'public_key'     => array(
 				'title'       => __( 'Store public key', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'Your Monokulo store\'s public key (starts with pk_). Filled in automatically by Connect above.', 'monokulo' ),
+				'description' => __( 'Connect fills it in.', 'monokulo' ),
 				'default'     => '',
-				'placeholder' => 'pk_...',
 				'desc_tip'    => true,
 			),
 			'secret_token'   => array(
 				'title'       => __( 'Store secret key', 'monokulo' ),
 				'type'        => 'password',
-				'description' => __( 'Your Monokulo store\'s secret key (starts with sk_). Filled in automatically by Connect above. Used to create orders from this site\'s server; never shown to customers.', 'monokulo' ),
+				'description' => __( 'Used to make orders from this shop\'s server, never shown to customers. Connect fills it in.', 'monokulo' ),
 				'default'     => '',
-				'placeholder' => 'sk_...',
 				'desc_tip'    => true,
 			),
 			'forward_errors' => array(
 				'title'       => __( 'Send errors to Monokulo', 'monokulo' ),
 				'type'        => 'checkbox',
-				'label'       => __( 'Also send this plugin\'s warnings and errors to Monokulo\'s Logs page', 'monokulo' ),
-				'description' => __( 'They stay in WooCommerce\'s own logs as well. Sent with your store\'s secret key, next to Monokulo\'s own lines for the same request. Monokulo keeps them only while Diagnostics is turned on in this store\'s settings there.', 'monokulo' ),
+				'label'       => __( 'Also send this plugin\'s warnings and errors to your Monokulo', 'monokulo' ),
+				'description' => __( 'Kept there when the store accepts client logs. They are always in WooCommerce > Status > Logs too.', 'monokulo' ),
 				'default'     => 'no',
 				'desc_tip'    => true,
 			),
@@ -300,24 +300,25 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	public function process_payment( $order_id ): array {
 		$order = wc_get_order( $order_id );
 		if ( ! $order instanceof WC_Order ) {
-			throw new Exception( esc_html__( 'Could not load this order to start the Monero payment.', 'monokulo' ) );
+			throw new Exception( esc_html__( 'Your order could not be found. Please start the checkout again.', 'monokulo' ) );
 		}
 
 		$monokulo_order_id = $this->create_monokulo_order( $order );
 
+		$checkout_url = $this->checkout_url( $monokulo_order_id );
+
 		$order->update_meta_data( self::META_ORDER_ID, $monokulo_order_id );
-		$order->add_order_note(
-			sprintf(
-				/* translators: %s: Monokulo order_id */
-				__( 'Customer redirected to Monokulo checkout for order_id %s.', 'monokulo' ),
-				$monokulo_order_id
-			)
-		);
+		$known = array_map( static fn( WC_Meta_Data $meta ) => $meta->value, $order->get_meta( self::META_ORDER_IDS, false ) );
+		if ( ! in_array( $monokulo_order_id, $known, true ) ) {
+			$order->add_meta_data( self::META_ORDER_IDS, $monokulo_order_id );
+		}
+		/* translators: %s: the Monokulo checkout */
+		$order->add_order_note( sprintf( __( 'Monokulo: the customer was sent to pay here: %s', 'monokulo' ), $checkout_url ) );
 		$order->save();
 
 		return array(
 			'result'   => 'success',
-			'redirect' => $this->checkout_url( $monokulo_order_id ),
+			'redirect' => $checkout_url,
 		);
 	}
 
@@ -332,7 +333,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 */
 	private function create_monokulo_order( WC_Order $order ): string {
 		if ( ! $this->has_credentials() ) {
-			throw new Exception( esc_html__( 'Monero payments are not fully configured for this store yet. Please contact the store owner.', 'monokulo' ) );
+			throw new Exception( esc_html__( 'Monero payments are not set up for this store yet. Please contact the store owner.', 'monokulo' ) );
 		}
 
 		$url      = $this->pay_url( $this->endpoint, 'orders' );
@@ -366,7 +367,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		if ( is_wp_error( $response ) ) {
 			$this->log( sprintf( 'Order creation request to %s failed: %s', $url, $response->get_error_message() ), 'error' );
-			throw new Exception( esc_html__( 'Could not reach Monokulo to start this payment. Please try again shortly.', 'monokulo' ) );
+			throw new Exception( esc_html__( 'The Monero payment service could not be reached. Please try again shortly.', 'monokulo' ) );
 		}
 
 		$status = (int) wp_remote_retrieve_response_code( $response );
@@ -382,7 +383,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$decoded = json_decode( $raw, true );
 		if ( ! is_array( $decoded ) || empty( $decoded['order_id'] ) || ! is_string( $decoded['order_id'] ) ) {
 			$this->log( sprintf( 'Order creation response from %s was not the expected shape: %s', $url, $raw ), 'error' );
-			throw new Exception( esc_html__( 'Monokulo returned an unexpected response. Please contact the store.', 'monokulo' ) );
+			throw new Exception( esc_html( self::customer_message_for_status( 0 ) ) );
 		}
 
 		return $decoded['order_id'];
@@ -404,7 +405,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				$description .= sprintf( __( ' + %d more', 'monokulo' ), count( $items ) - 1 );
 			}
 		}
-		$description = trim( (string) preg_replace( '/\p{Cc}+/u', ' ', $description ) );
+		$description = trim( (string) preg_replace( '/[\p{Cc}\s]+/u', ' ', $description ) );
 		if ( mb_strlen( $description, 'UTF-8' ) > self::MAX_DESCRIPTION_CHARS ) {
 			$description = rtrim( mb_substr( $description, 0, self::MAX_DESCRIPTION_CHARS - 1, 'UTF-8' ) ) . '…';
 		}
@@ -436,7 +437,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		if ( 401 === $status || 403 === $status ) {
 			return __( 'Monero payments are not available for this store right now. Please contact the store owner.', 'monokulo' );
 		}
-		return __( 'Monokulo could not start this payment. Please contact the store or try again.', 'monokulo' );
+		return __( 'The Monero payment could not be started. Please try again, or contact the store.', 'monokulo' );
 	}
 
 	/**
@@ -502,15 +503,16 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 	/**
 	 * A typed Monokulo address, trimmed and without a trailing slash, or
-	 * null when it isn't an http(s) address with a host.
+	 * null when it isn't a plain http(s) address (no login, query or
+	 * fragment).
 	 *
 	 * @param string $typed What the merchant typed.
 	 */
 	public static function clean_address( string $typed ): ?string {
 		$address = rtrim( trim( $typed ), '/' );
-		$scheme  = wp_parse_url( $address, PHP_URL_SCHEME );
-		$host    = wp_parse_url( $address, PHP_URL_HOST );
-		if ( ! in_array( strtolower( (string) $scheme ), array( 'http', 'https' ), true ) || empty( $host ) ) {
+		$parts   = wp_parse_url( $address );
+		if ( ! is_array( $parts ) || empty( $parts['host'] ) || ! in_array( strtolower( $parts['scheme'] ?? '' ), array( 'http', 'https' ), true )
+			|| isset( $parts['user'] ) || isset( $parts['query'] ) || isset( $parts['fragment'] ) ) {
 			return null;
 		}
 		return $address;
@@ -527,7 +529,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$address = self::clean_address( (string) $value );
 		if ( null === $address ) {
 			if ( class_exists( 'WC_Admin_Settings' ) ) {
-				WC_Admin_Settings::add_error( __( 'The Monokulo address must start with https:// (or http://), like https://monokulo.com.', 'monokulo' ) );
+				WC_Admin_Settings::add_error( __( 'Enter an http or https address for your Monokulo, such as https://monokulo.com.', 'monokulo' ) );
 			}
 			return (string) $this->get_option( $key );
 		}
@@ -535,8 +537,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * The Connect button. Each render makes a new nonce, good for ten
-	 * minutes as Monokulo's connect token is, since the link carries it.
+	 * The Connect button. Each render makes a new nonce for the admin
+	 * viewing it, good once and for ten minutes, as Monokulo's connect token
+	 * is.
 	 *
 	 * @param string $key  Field key.
 	 * @param array  $data Field data.
@@ -546,13 +549,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$data      = wp_parse_args(
 			$data,
 			array(
+				'title'       => '',
 				'desc_tip'    => false,
 				'description' => '',
 			)
 		);
 
 		$nonce = bin2hex( random_bytes( 16 ) );
-		set_transient( self::nonce_transient(), $nonce, 10 * MINUTE_IN_SECONDS );
+		set_transient( self::nonce_transient( $nonce ), get_current_user_id(), 10 * MINUTE_IN_SECONDS );
 		$connect_url = rtrim( $this->monokulo_address(), '/' ) . '/plugins/connect/' . self::CONNECT_SLUG . '?' . http_build_query(
 			array(
 				'site_url'   => home_url( '/' ),
@@ -569,17 +573,19 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		?>
 		<tr valign="top">
 			<th scope="row" class="titledesc">
-				<label for="<?php echo esc_attr( $field_key ); ?>"><?php esc_html_e( 'Connect your Monero wallet', 'monokulo' ); ?></label>
+				<label for="<?php echo esc_attr( $field_key ); ?>"><?php echo esc_html( $data['title'] ); ?></label>
 			</th>
 			<td class="forminp">
-				<?php if ( $this->has_credentials() ) : ?>
-					<p>
+				<p>
+					<?php if ( $this->has_credentials() ) : ?>
 						<?php esc_html_e( 'Connected as', 'monokulo' ); ?>
 						<code><?php echo esc_html( $this->public_key ); ?></code>
-					</p>
-				<?php endif; ?>
+					<?php else : ?>
+						<?php esc_html_e( 'Not connected', 'monokulo' ); ?>
+					<?php endif; ?>
+				</p>
 				<a href="<?php echo esc_url( $connect_url ); ?>" id="<?php echo esc_attr( $field_key ); ?>" class="button button-primary">
-					<?php echo $this->has_credentials() ? esc_html__( 'Reconnect your Monero wallet', 'monokulo' ) : esc_html__( 'Connect your Monero wallet', 'monokulo' ); ?>
+					<?php echo $this->has_credentials() ? esc_html__( 'Connect again', 'monokulo' ) : esc_html__( 'Connect', 'monokulo' ); ?>
 				</a>
 				<p>
 					<?php esc_html_e( 'Connects to', 'monokulo' ); ?>
@@ -593,10 +599,13 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * The transient holding the connect nonce.
+	 * The transient that remembers a connect nonce, holding the id of the
+	 * admin it was made for.
+	 *
+	 * @param string $nonce The nonce.
 	 */
-	private static function nonce_transient(): string {
-		return 'monokulo_connect_nonce_' . self::ID;
+	private static function nonce_transient( string $nonce ): string {
+		return 'monokulo_connect_' . $nonce;
 	}
 
 	/**
@@ -621,30 +630,37 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Checks the nonce (used up whatever happens), redeems the token at
-	 * `/finish`, saves the connection and turns the gateway on. A failure
-	 * changes no setting.
+	 * Checks the nonce (used up whatever happens: it must be one this admin
+	 * was given), redeems the token at `/finish`, saves the connection and
+	 * turns the gateway on. A failure changes no setting.
 	 *
 	 * @param array{token?: string, nonce?: string} $query The connect flow's `token` and `nonce`.
 	 * @return string The settings page, with `monokulo_connected` or
 	 *                `monokulo_connect_error` for the notice.
 	 */
 	public function process_connect_return( array $query ): string {
-		$token  = (string) ( $query['token'] ?? '' );
-		$nonce  = (string) ( $query['nonce'] ?? '' );
-		$stored = get_transient( self::nonce_transient() );
-		delete_transient( self::nonce_transient() );
+		$token = (string) ( $query['token'] ?? '' );
+		$nonce = (string) ( $query['nonce'] ?? '' );
+		$admin = false;
+		if ( preg_match( '/\A[0-9a-f]{32}\z/', $nonce ) ) {
+			$admin = get_transient( self::nonce_transient( $nonce ) );
+			delete_transient( self::nonce_transient( $nonce ) );
+		}
 
-		if ( '' === $token || '' === $nonce || ! is_string( $stored ) || ! hash_equals( $stored, $nonce ) ) {
-			$this->log( 'Connect return rejected: missing token, or the nonce did not match what this site generated.', 'warning' );
+		if ( '' === $token || false === $admin || get_current_user_id() !== (int) $admin ) {
+			$this->log( 'Connect return refused: no token, or a nonce this shop did not give this admin, already used or expired.', 'warning' );
 			return self::settings_url( array( 'monokulo_connect_error' => 'nonce' ) );
 		}
 
 		$status = 0;
 		$finish = $this->call_connect_finish( $token, $status );
 		if ( null === $finish ) {
-			// 503: this Monokulo can't connect plugins yet; trying later can work.
-			return self::settings_url( array( 'monokulo_connect_error' => 503 === $status ? 'unavailable' : 'finish' ) );
+			$error = match ( $status ) {
+				0       => 'unreachable',
+				503     => 'unavailable',
+				default => 'finish',
+			};
+			return self::settings_url( array( 'monokulo_connect_error' => $error ) );
 		}
 
 		// Only an http:// .onion address is somewhere to send a customer on Tor.
@@ -723,6 +739,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * - 401: the signature is missing or doesn't check out;
 	 * - 400: signed, but not a webhook envelope;
 	 * - 404: no order here for that Monokulo order;
+	 * - 500: applying it failed, so the retry applies it;
 	 * - 200: applied, already applied before, or an event this version
 	 *   doesn't know (logged).
 	 *
@@ -730,25 +747,24 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * @param string $body      The request body as sent.
 	 * @param string $signature The `X-Monokulo-Signature` header, or ''.
-	 * @param int    $now       The time to check the signature against.
 	 */
-	public function process_webhook( string $body, string $signature, ?int $now = null ): int {
-		if ( ! self::verify_signature( $this->webhook_signing_secret, $body, $signature, $now ?? time() ) ) {
-			$this->log( 'Webhook rejected: missing or invalid X-Monokulo-Signature.', 'warning' );
+	public function process_webhook( string $body, string $signature ): int {
+		if ( ! self::verify_signature( $this->webhook_signing_secret, $body, $signature, time() ) ) {
+			$this->log( 'Webhook refused: a missing or wrong X-Monokulo-Signature.', 'warning' );
 			return 401;
 		}
 
 		$event = json_decode( $body, true );
 		foreach ( array( 'event', 'event_id', 'order_id' ) as $field ) {
 			if ( ! is_array( $event ) || empty( $event[ $field ] ) || ! is_string( $event[ $field ] ) ) {
-				$this->log( sprintf( 'Webhook rejected: correctly signed but not the expected envelope shape: %s', $body ), 'error' );
+				$this->log( 'Webhook refused: signed, but not a webhook envelope: ' . $body, 'error' );
 				return 400;
 			}
 		}
 
 		$order = self::find_order( $event['order_id'] );
 		if ( null === $order ) {
-			$this->log( sprintf( 'Webhook for order_id %s (event %s) has no matching order on this site.', $event['order_id'], $event['event_id'] ), 'warning' );
+			$this->log( sprintf( 'Webhook %s for Monokulo order %s: no such order in this shop.', $event['event_id'], $event['order_id'] ), 'warning' );
 			return 404;
 		}
 
@@ -758,10 +774,16 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return 200;
 		}
 
-		$this->apply_event( $order, $event );
-		$applied[] = $event['event_id'];
-		$order->update_meta_data( self::META_APPLIED_EVENT_IDS, wp_json_encode( $applied ) );
-		$order->save();
+		try {
+			$this->apply_event( $order, $event );
+			$applied[] = $event['event_id'];
+			$order->update_meta_data( self::META_APPLIED_EVENT_IDS, wp_json_encode( $applied ) );
+			$order->save();
+		} catch ( Throwable $e ) {
+			$this->log( sprintf( 'Webhook %s for order %d could not be applied: %s', $event['event_id'], $order->get_id(), $e->getMessage() ), 'error' );
+			return 500;
+		}
+		$this->log( sprintf( 'Webhook %s (%s) applied to order %d.', $event['event_id'], $event['event'], $order->get_id() ) );
 
 		return 200;
 	}
@@ -788,14 +810,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * The order a Monokulo order belongs to.
+	 * The order a Monokulo order was made for.
 	 *
 	 * @param string $monokulo_order_id Monokulo's order id.
 	 */
 	private static function find_order( string $monokulo_order_id ): ?WC_Order {
 		$orders = wc_get_orders(
 			array(
-				'meta_key'   => self::META_ORDER_ID, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_key'   => self::META_ORDER_IDS, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value' => $monokulo_order_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'limit'      => 1,
 			)
@@ -804,66 +826,84 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Applies one event. The double-spend events only add a note: when they
-	 * change the order's status, Monokulo sends that as its own
-	 * `order.<status>` event. Unknown events are logged and ignored, so a
-	 * newer Monokulo doesn't break the shop.
+	 * Applies one event to the order:
+	 *
+	 * - `order.paid`, `order.overpaid`: `payment_complete()`, which picks
+	 *   Processing or Completed, reduces stock and sends WooCommerce's emails;
+	 * - `order.unconfirmed`, `order.confirming`, `order.partial`: On hold;
+	 * - `order.expired`: Cancelled;
+	 * - `order.pending`: Pending (a double-spend voided every payment);
+	 * - `order.double_spend_detected`, `order.double_spend_reversed`: a note
+	 *   only. When they change the order's status, Monokulo sends that as its
+	 *   own `order.<status>` event.
+	 *
+	 * Each adds a note. A paid order is never moved back, and an event about
+	 * an older payment request (the total changed since) never moves the
+	 * order: the note says so, for the merchant to check. Unknown events are
+	 * logged and ignored, so a newer Monokulo doesn't break the shop.
 	 *
 	 * @param WC_Order $order The order.
 	 * @param array    $event The decoded webhook body.
+	 * @throws RuntimeException When WooCommerce can't complete the payment.
 	 */
 	private function apply_event( WC_Order $order, array $event ): void {
 		$type   = $event['event'];
-		$status = str_starts_with( $type, 'order.' ) ? substr( $type, strlen( 'order.' ) ) : '';
-
-		if ( 'paid' === $status || 'overpaid' === $status || isset( self::STATUS_MAP[ $status ] ) ) {
-			$this->apply_status( $order, $status );
-			return;
-		}
-
-		if ( 'order.double_spend_detected' === $type ) {
-			$order->add_order_note( __( 'Monokulo: FRAUD ALERT - a payment previously credited to this order was proven to be a double-spend and has been voided by the engine. If this changed the order\'s payment status, that change was announced separately. Please review this order.', 'monokulo' ) );
-			return;
-		}
-
-		if ( 'order.double_spend_reversed' === $type ) {
-			$txid = is_string( $event['txid'] ?? null ) ? $event['txid'] : __( 'unknown', 'monokulo' );
-			/* translators: %s: the transaction id the earlier double-spend accusation was about */
-			$order->add_order_note( sprintf( __( 'Monokulo: an earlier double-spend accusation against this order (transaction %s) was a false positive and has been reversed by the engine. If this changed the order\'s payment status, that change was announced separately.', 'monokulo' ), $txid ) );
-			return;
-		}
-
-		$this->log( sprintf( 'Webhook: unrecognized event type "%s" - envelope accepted, no action taken.', $type ), 'warning' );
-	}
-
-	/**
-	 * Moves the order for an `order.<status>` event:
-	 *
-	 * - paid, overpaid: `payment_complete()`, which picks Processing or
-	 *   Completed, reduces stock and sends WooCommerce's emails; an
-	 *   overpayment also gets a note that the excess isn't refunded;
-	 * - unconfirmed, confirming, partial: On hold (seen, not yet trusted);
-	 * - expired: Cancelled, with a note that funds received stay at the address;
-	 * - pending: Pending (a double-spend voided the only payment).
-	 *
-	 * @param WC_Order $order  The order.
-	 * @param string   $status Monokulo's status.
-	 */
-	private function apply_status( WC_Order $order, string $status ): void {
-		if ( 'paid' === $status || 'overpaid' === $status ) {
-			if ( 'overpaid' === $status ) {
-				$order->add_order_note( __( 'Monokulo: the customer sent more Monero than the amount due. The excess is not automatically refunded - handle any refund manually.', 'monokulo' ) );
-			}
-			$order->payment_complete();
-			return;
-		}
-
-		$note = match ( $status ) {
-			'partial' => __( 'Monokulo: a partial payment was received - the full amount due has not yet arrived.', 'monokulo' ),
-			'expired' => __( 'Monokulo: this order\'s payment window has closed without full payment. If any funds were received, they remain at the payment address - there is no automatic refund; handle manually.', 'monokulo' ),
-			default   => '',
+		$txid   = is_string( $event['txid'] ?? null ) ? $event['txid'] : __( 'unknown', 'monokulo' );
+		$paid   = 'order.paid' === $type || 'order.overpaid' === $type;
+		$status = self::STATUS_MAP[ $type ] ?? null;
+		$note   = match ( $type ) {
+			'order.unconfirmed', 'order.confirming' => __( 'Monokulo: a payment was seen and is waiting for confirmations.', 'monokulo' ),
+			'order.partial'               => __( 'Monokulo: part of the amount due has arrived. The order is not paid in full yet.', 'monokulo' ),
+			'order.paid'                  => __( 'Monokulo: paid in full.', 'monokulo' ),
+			'order.overpaid'              => __( 'Monokulo: paid, with more than the amount due. The excess is not refunded automatically: refund it yourself if needed.', 'monokulo' ),
+			'order.expired'               => __( 'Monokulo: the payment window closed without full payment. Any funds received stay at the payment address; refund them yourself if needed.', 'monokulo' ),
+			'order.pending'               => __( 'Monokulo: no payment counts towards this order any more.', 'monokulo' ),
+			/* translators: %s: transaction id */
+			'order.double_spend_detected' => sprintf( __( 'Monokulo: FRAUD ALERT. A payment to this order was double-spent and no longer counts (transaction %s). If this changed the order status, that is a separate note. Check this order before sending anything.', 'monokulo' ), $txid ),
+			/* translators: %s: transaction id */
+			'order.double_spend_reversed' => sprintf( __( 'Monokulo: the earlier double-spend alert for this order (transaction %s) was wrong and is withdrawn. If this changed the order status, that is a separate note.', 'monokulo' ), $txid ),
+			default                       => null,
 		};
-		$order->update_status( self::STATUS_MAP[ $status ], $note );
+		if ( null === $note ) {
+			$this->log( sprintf( 'Webhook %s: unknown event "%s", accepted and ignored.', $event['event_id'], $type ), 'warning' );
+			return;
+		}
+
+		$store_id = is_string( $event['store']['id'] ?? null ) ? $event['store']['id'] : '';
+		if ( '' !== $store_id ) {
+			/* translators: %s: the order's page in the merchant's Monokulo dashboard */
+			$note .= ' ' . sprintf( __( 'In Monokulo: %s', 'monokulo' ), rtrim( $this->endpoint, '/' ) . '/dashboard/stores/' . rawurlencode( $store_id ) . '/orders/' . rawurlencode( $event['order_id'] ) );
+		}
+
+		if ( ( $paid || null !== $status ) && $order->get_meta( self::META_ORDER_ID ) !== $event['order_id'] ) {
+			$order->add_order_note(
+				$paid
+					? __( 'Monokulo: an older payment request for this order was paid, after the order total changed. Check the amount received before treating this order as paid.', 'monokulo' ) . ' ' . $note
+					: $note . ' ' . __( 'This is about an older payment request for this order, so its status is left as it is.', 'monokulo' )
+			);
+			return;
+		}
+
+		if ( $paid ) {
+			// payment_complete() catches its own failures and returns false.
+			if ( ! $order->payment_complete( $event['order_id'] ) ) {
+				throw new RuntimeException( 'WooCommerce could not complete the payment' );
+			}
+			$order->add_order_note( $note );
+			return;
+		}
+
+		if ( null !== $status && $order->is_paid() ) {
+			$order->add_order_note( $note . ' ' . __( 'The order was already paid, so its status is left as it is: check it before doing anything else.', 'monokulo' ) );
+			return;
+		}
+
+		if ( null !== $status && ! $order->has_status( $status ) ) {
+			$order->update_status( $status, $note );
+			return;
+		}
+
+		$order->add_order_note( $note );
 	}
 
 	/**
@@ -884,17 +924,17 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		if ( 'wc-settings' !== ( $_GET['page'] ?? '' ) || self::ID !== ( $_GET['section'] ?? '' ) ) {
 			return;
 		}
-		$error = isset( $_GET['monokulo_connect_error'] ) ? sanitize_key( wp_unslash( $_GET['monokulo_connect_error'] ) ) : null;
-		if ( isset( $_GET['monokulo_connected'] ) ) {
-			$class   = 'notice-success';
-			$message = __( 'Your Monero wallet is connected - Monero payments are now enabled.', 'monokulo' );
-		} elseif ( 'unavailable' === $error ) {
-			$class   = 'notice-error';
-			$message = __( 'Monokulo is not ready to connect plugins yet: its operator has not set its public address. Please try again later.', 'monokulo' );
-		} elseif ( null !== $error ) {
-			$class   = 'notice-error';
-			$message = __( 'Could not connect your Monero wallet. Please try again.', 'monokulo' );
-		} else {
+		$error   = isset( $_GET['monokulo_connect_error'] ) ? sanitize_key( wp_unslash( $_GET['monokulo_connect_error'] ) ) : null;
+		$message = match ( true ) {
+			isset( $_GET['monokulo_connected'] ) => __( 'Your store is connected. Monero is now offered at checkout.', 'monokulo' ),
+			'unavailable' === $error => __( 'Your Monokulo cannot connect shops yet: its operator has not set its public address.', 'monokulo' ),
+			'unreachable' === $error => __( 'Your Monokulo could not be reached from this shop\'s server. Check the Monokulo address, then connect again.', 'monokulo' ),
+			'nonce' === $error       => __( 'That connect link was already used or has expired. Please connect again.', 'monokulo' ),
+			null !== $error          => __( 'Monokulo did not hand over the store\'s keys. Please connect again; the log says why.', 'monokulo' ),
+			default                  => null,
+		};
+		$class = null === $error ? 'notice-success' : 'notice-error';
+		if ( null === $message ) {
 			return;
 		}
 		// phpcs:enable
