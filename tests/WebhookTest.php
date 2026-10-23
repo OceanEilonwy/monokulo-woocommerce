@@ -118,7 +118,7 @@ class WebhookTest extends MonokuloTestCase {
 		);
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'mko_linked', $order->get_transaction_id() );
-		$this->assertStringContainsString( 'In Monokulo: https://pay.example.com/dashboard/stores/store-1/orders/mko_linked', self::notes( $order ) );
+		$this->assertStringContainsString( 'In Monokulo: https://pay.example.com/stores/store-1/orders/mko_linked', self::notes( $order ) );
 	}
 
 	/**

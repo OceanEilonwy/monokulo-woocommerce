@@ -38,14 +38,23 @@ touches the shop or Monokulo.
 
    A store you made without a site can take the shop's: add the site in
    the store's settings (the *Store* card), then connect.
-4. You're back on the plugin's settings, connected. Connecting fills in the
-   checkout address and the store's keys and turns Monero on at checkout.
+4. You're back on the plugin's settings, connected. Connecting saves the
+   store's keys and where Monokulo's API is, and turns Monero on at
+   checkout.
 
 Monokulo only sends the connect flow back to the shop over **https** (plain
 http only for `localhost` or a `.onion` address).
 
 Any Monokulo store can do everything at once: take payments at the till,
 show the checkout on your own pages, and take WooCommerce orders.
+
+### Updating from a version before Monokulo's API
+
+A shop connected by an earlier version of the plugin keeps working after
+the update, without connecting again: the plugin finds the API at its
+Monokulo address's `/api/v1` with the key it already has. (It forgets the
+old checkout and onion addresses; customers now pay at the checkout link
+Monokulo gives each order.)
 
 ### While it's connected
 
@@ -70,9 +79,15 @@ the store by its website and gets the new key and a new webhook.
 
 ## Orders
 
-The plugin creates each order from the shop's server with the store's
-secret key, and names itself (`Monokulo-Client: woocommerce/<version>`), so
-the store's Orders page in Monokulo shows those orders as *WooCommerce*.
+The plugin uses Monokulo's [HTTP API](https://docs.monokulo.com/api/) from
+the shop's server, with the store's secret key, and names itself
+(`Monokulo-Client: woocommerce/<version>`), so the store's Orders page in
+Monokulo shows those orders as *WooCommerce*. It reads the API's entry
+(`/api/v1`, kept for an hour), makes the order with the entry's
+`create-order` form, and sends the customer to the order's checkout link
+(`/checkout/<order id>` on your Monokulo). When Monokulo refuses an order,
+the customer gets a short message and the log gets Monokulo's problem: its
+title, what went wrong, and the problem's page.
 
 At the top of Monokulo's checkout the customer sees the store's name and
 what they're paying for: "Order #1042: Blue mug + 2 more", the order number
@@ -147,7 +162,7 @@ scripts/test down
 
 Admin: `http://localhost:8092/wp-admin/`, user `admin`, password
 `admin-password-1`. The smoke test sets the shop's Monokulo address to
-`http://localhost:8081`, where `scripts/smoke` starts one.
+`http://localhost:18092`, where `scripts/smoke` starts one.
 
 - **wordpress**: the plugin booted inside WordPress with WooCommerce by
   WordPress's PHPUnit test library, each test in a rolled-back
@@ -156,7 +171,10 @@ Admin: `http://localhost:8092/wp-admin/`, user `admin`, password
 - **smoke**: a fresh Monokulo (`docker/monokulo-smoke.toml`): sign up, add
   a watch-only wallet, connect from the plugin's settings, then a guest
   checkout through WooCommerce's Store API lands on the Monokulo checkout,
-  whose status is pending. Nothing is paid.
+  and the order, read from the API, is pending. Nothing is paid. It also
+  checks the wordpress suite's API fixtures (`tests/fixtures`) against
+  that Monokulo's OpenAPI document. Run it on a shop that hasn't been
+  connected yet (`scripts/test down` and `up` start a fresh one).
 
 Webhook tests use Monokulo's published test vectors, vendored in
 `tests/vectors` and pinned to a monokulo commit (`tests/vectors/PIN`).

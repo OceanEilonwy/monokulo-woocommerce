@@ -3,6 +3,8 @@ namespace Monokulo\WooCommerce\Tests\Smoke;
 
 use PHPUnit\Framework\TestCase;
 
+require_once dirname(__DIR__) . '/fixtures/class-monokulo-api-fixtures.php';
+
 /**
  * The installed plugin against a real Monokulo (MONOKULO_URL, a fresh
  * instance started with docker/monokulo-smoke.toml), as a merchant and a
@@ -16,9 +18,13 @@ use PHPUnit\Framework\TestCase;
  *    goes back to WooCommerce, which redeems the token: connected;
  * 4. a guest finds Monero in the block checkout, and buys the shop's mug
  *    with it through WooCommerce's Store API (what the block checkout
- *    posts): the plugin creates the Monokulo order and sends them to its
- *    checkout, which loads and says pending;
+ *    posts): the plugin makes the Monokulo order through the API and
+ *    sends them to its checkout, which loads; the order, read with the
+ *    store's public key, is pending;
  * 5. the shop's webhook address answers, and refuses an unsigned delivery.
+ *
+ * And the unit tests' API fixtures are what this Monokulo's OpenAPI
+ * document describes.
  *
  * Nothing is paid. Monokulo's pages are filled in by their fields' names.
  */
@@ -48,19 +54,99 @@ final class MonokuloSmokeTest extends TestCase {
 		$this->signUpToMonokulo();
 		$publicKey = $this->connectTheShop();
 		$checkout = $this->buyWithMonero();
-		$this->assertStringStartsWith($this->monokulo . '/pay/' . $publicKey . '/orders/', $checkout);
+		$this->assertMatchesRegularExpression('#\A' . preg_quote($this->monokulo, '#') . '/checkout/([^/?]+)\z#', $checkout);
+		$orderId = basename($checkout);
 
 		// The Monokulo checkout loads, and the new order is waiting for payment.
 		$page = $this->browser->get($checkout);
 		$this->assertSame(200, $page->status, $page->text());
-		$status = $this->browser->get($checkout . '/status');
-		$this->assertSame(200, $status->status);
-		$this->assertSame('pending', $status->json()['status']);
-		$this->assertSame(0, $status->json()['confirmations']);
+		$order = $this->browser->get($this->monokulo . '/api/v1/orders/' . rawurlencode($orderId), ['Authorization' => 'Bearer ' . $publicKey]);
+		$this->assertSame(200, $order->status, $order->body);
+		$this->assertSame('pending', $order->json()['status']);
+		$this->assertSame(0, $order->json()['confirmations']);
+		$this->assertSame('/checkout/' . $orderId, $order->json()['_links']['mk:checkout']['href']);
 
 		// Plain permalinks: the REST API is ?rest_route=.
 		$webhook = $this->browser->post(self::SHOP . '?rest_route=/monokulo/v1/webhook', '{"event":"order.paid"}', ['Content-Type' => 'application/json']);
 		$this->assertSame(401, $webhook->status, $webhook->body);
+	}
+
+	/**
+	 * The unit tests answer with Monokulo_Api_Fixtures: each of their
+	 * fields, links and forms is one this Monokulo's OpenAPI document
+	 * (linked from the entry as `service-desc`) has.
+	 */
+	public function test_the_api_fixtures_are_what_monokulo_describes(): void {
+		$entry = $this->browser->get($this->monokulo . '/api/v1');
+		$this->assertSame(200, $entry->status, $entry->body);
+		$href = $entry->json()['_links']['service-desc']['href'] ?? null;
+		$this->assertIsString($href, 'the entry links its OpenAPI document');
+		$openapi = $this->browser->get($this->monokulo . $href);
+		$this->assertSame(200, $openapi->status);
+		$doc = $openapi->json();
+
+		$entryPath = $doc['paths']['/api/v1']['get'] ?? null;
+		$this->assertIsArray($entryPath, 'GET /api/v1');
+		$this->assertMatchesFixture($doc, self::okSchema($doc, $entryPath, '200'), \Monokulo_Api_Fixtures::entry(), 'entry');
+
+		$create = $doc['paths']['/api/v1/orders']['post'] ?? null;
+		$this->assertIsArray($create, 'POST /api/v1/orders');
+		$this->assertMatchesFixture($doc, self::okSchema($doc, $create, '201'), \Monokulo_Api_Fixtures::order('order_1'), 'order');
+		// What the plugin sends to create-order is what it takes.
+		$takes = self::deref($doc, reset($create['requestBody']['content'])['schema'])['properties'] ?? [];
+		foreach (['amount', 'currency', 'merchant_order_id', 'show_merchant_order_id', 'description', 'idempotency_key'] as $field) {
+			$this->assertArrayHasKey($field, $takes, "create-order takes $field");
+		}
+		$this->assertArrayHasKey('/api/v1/logs', $doc['paths'], 'where logs go');
+	}
+
+	/** The schema of an operation's `$status` answer, references followed. */
+	private static function okSchema(array $doc, array $operation, string $status): array {
+		$content = $operation['responses'][$status]['content'] ?? [];
+		$schema = reset($content)['schema'] ?? null;
+		self::assertIsArray($schema, "a $status answer: " . json_encode(array_keys($operation['responses'] ?? [])));
+		return self::deref($doc, $schema);
+	}
+
+	private static function deref(array $doc, array $schema): array {
+		while (isset($schema['$ref'])) {
+			$path = explode('/', substr($schema['$ref'], 2));
+			$schema = $doc;
+			foreach ($path as $part) {
+				$schema = $schema[str_replace(['~1', '~0'], ['/', '~'], $part)];
+			}
+		}
+		foreach (['allOf', 'anyOf', 'oneOf'] as $combined) {
+			foreach ($schema[$combined] ?? [] as $part) {
+				$part = self::deref($doc, $part);
+				$schema['properties'] = ($schema['properties'] ?? []) + ($part['properties'] ?? []);
+				$schema['required'] = array_merge($schema['required'] ?? [], $part['required'] ?? []);
+			}
+		}
+		return $schema;
+	}
+
+	/**
+	 * Every field, link and form of `$fixture` is in `$schema`, and every
+	 * field `$schema` requires is in `$fixture`.
+	 */
+	private function assertMatchesFixture(array $doc, array $schema, array $fixture, string $what): void {
+		$properties = $schema['properties'] ?? [];
+		foreach (array_keys($fixture) as $field) {
+			$this->assertArrayHasKey($field, $properties, "$what: $field is described");
+		}
+		foreach ($schema['required'] ?? [] as $field) {
+			$this->assertArrayHasKey($field, $fixture, "$what: the fixture has $field");
+		}
+		$links = self::deref($doc, $properties['_links'])['properties'] ?? [];
+		foreach (array_keys($fixture['_links']) as $rel) {
+			$this->assertArrayHasKey($rel, $links, "$what: link $rel is described");
+		}
+		// A form is the operation named for it (`x-hal-forms-template`).
+		foreach ($fixture['_templates'] ?? [] as $name => $form) {
+			$operation = $doc['paths'][$form['target']][strtolower($form['method'])] ?? [];
+			$this->assertSame($name, $operation['x-hal-forms-template'] ?? null, "$what: form $name is {$form['method']} {$form['target']}");
+		}
 	}
 
 	/** A fresh Monokulo asks for its operator first; that account is the merchant's too. */
@@ -71,8 +157,8 @@ final class MonokuloSmokeTest extends TestCase {
 			$page = $this->browser->get($this->monokulo . '/admin/setup');
 			$done = $this->browser->submit($page, '/admin/setup', ['email' => $email, 'password' => self::PASSWORD, 'confirm_password' => self::PASSWORD]);
 		} else {
-			$page = $this->browser->get($this->monokulo . '/dashboard/signup');
-			$done = $this->browser->submit($page, '/dashboard/signup', ['email' => $email, 'password' => self::PASSWORD, 'confirm_password' => self::PASSWORD]);
+			$page = $this->browser->get($this->monokulo . '/signup');
+			$done = $this->browser->submit($page, '/signup', ['email' => $email, 'password' => self::PASSWORD, 'confirm_password' => self::PASSWORD]);
 		}
 		$this->assertContains($done->status, [302, 303], 'signed up: ' . $done->text());
 
