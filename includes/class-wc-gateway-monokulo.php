@@ -47,7 +47,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * instance. Merchants who run their own Monokulo, or use another, change
 	 * the setting before connecting. It's where the connect flow starts
 	 * (`crates/monokulo/src/http/connect.rs`); orders are then created at the
-	 * `endpoint` that flow's `/finish` returns (`$api_base_url`), the same
+	 * `endpoint` that flow's `/finish` returns (`$endpoint`), the same
 	 * Monokulo's configured public address. Keeping the two apart lets an
 	 * instance serve its connect pages and its checkout from different
 	 * addresses (for example a clearnet dashboard and an onion checkout).
@@ -196,19 +196,19 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * @var string
 	 */
-	private $api_base_url;
+	private $endpoint;
 
 	/**
 	 * Monokulo's onion address, e.g. `http://abc...xyz.onion` - the
 	 * `onion_endpoint` `/finish` returned, when Monokulo has one
 	 * (`connect.rs::FinishResponse::onion_endpoint`). A customer shopping on
 	 * this shop's own `.onion` address is sent to its checkout there, so
-	 * they never leave Tor; orders are still created at `$api_base_url`,
+	 * they never leave Tor; orders are still created at `$endpoint`,
 	 * from this server. Empty when Monokulo has no onion address.
 	 *
 	 * @var string
 	 */
-	private $onion_base_url;
+	private $onion_endpoint;
 
 	/**
 	 * The store's public key (`pk_...`) this gateway creates orders under,
@@ -216,7 +216,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * @var string
 	 */
-	private $tenant_public_key;
+	private $public_key;
 
 	/**
 	 * The store's secret key (`sk_...`), returned by the connect flow's
@@ -390,9 +390,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// un-trimmed `pk_...\n` would fail `create_monokulo_order()`'s
 		// outbound call in a way that looks identical to a genuinely wrong
 		// key.
-		$this->api_base_url     = trim( (string) $this->get_option( 'endpoint', '' ) );
-		$this->onion_base_url   = trim( (string) $this->get_option( 'onion_endpoint', '' ) );
-		$this->tenant_public_key = trim( (string) $this->get_option( 'public_key', '' ) );
+		$this->endpoint     = trim( (string) $this->get_option( 'endpoint', '' ) );
+		$this->onion_endpoint   = trim( (string) $this->get_option( 'onion_endpoint', '' ) );
+		$this->public_key = trim( (string) $this->get_option( 'public_key', '' ) );
 		$this->secret_token      = trim( (string) $this->get_option( 'secret_token', '' ) );
 		$this->webhook_signing_secret = trim( (string) $this->get_option( 'webhook_signing_secret', '' ) );
 
@@ -558,9 +558,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			// (whose own `generate_title_html()` renders fixed markup this
 			// step needs to deviate from: a real `<a href=...>` built fresh
 			// on every render, not static text).
-			// Where Connect goes, as OpenCart's "Monokulo address" setting
-			// is. Read through `get_control_plane_base_url()`, so the
-			// `monokulo_control_plane_base_url` filter can still override it.
 			'address'     => array(
 				'title'       => __( 'Monokulo address', 'monokulo' ),
 				'type'        => 'text',
@@ -643,7 +640,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @return bool
 	 */
 	private function has_credentials() {
-		return '' !== $this->api_base_url && '' !== $this->tenant_public_key && '' !== $this->secret_token;
+		return '' !== $this->endpoint && '' !== $this->public_key && '' !== $this->secret_token;
 	}
 
 	/**
@@ -1018,8 +1015,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private function get_orders_endpoint_url() {
 		return sprintf(
 			'%s/pay/%s/orders',
-			rtrim( $this->api_base_url, '/' ),
-			rawurlencode( $this->tenant_public_key )
+			rtrim( $this->endpoint, '/' ),
+			rawurlencode( $this->public_key )
 		);
 	}
 
@@ -1030,11 +1027,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * @return string
 	 */
-	private function customer_base_url() {
-		if ( '' !== $this->onion_base_url && self::is_onion_host( self::request_host() ) ) {
-			return $this->onion_base_url;
+	private function checkout_address() {
+		if ( '' !== $this->onion_endpoint && self::is_onion_host( self::request_host() ) ) {
+			return $this->onion_endpoint;
 		}
-		return $this->api_base_url;
+		return $this->endpoint;
 	}
 
 	/**
@@ -1069,30 +1066,20 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private function get_checkout_url( $order_id ) {
 		return sprintf(
 			'%s/pay/%s/orders/%s',
-			rtrim( $this->customer_base_url(), '/' ),
-			rawurlencode( $this->tenant_public_key ),
+			rtrim( $this->checkout_address(), '/' ),
+			rawurlencode( $this->public_key ),
 			rawurlencode( $order_id )
 		);
 	}
 
 	/**
-	 * The control plane's own base URL, run through
-	 * `monokulo_control_plane_base_url` - a filter, not just the bare
-	 * constant, for two concrete reasons: it's what lets this plugin's own
-	 * tests point `process_connect_return()`/`generate_monokulo_connect_html()`
-	 * at a fake control plane (`pre_http_request` alone can't substitute for
-	 * the *browser-facing* `GET /plugins/connect/...` URL a test never actually
-	 * fetches, only asserts the shape of - so the base URL itself has to be
-	 * swappable, not just the HTTP call), and it's the one real, sanctioned
-	 * escape hatch for anyone running their own control plane instance
-	 * (a self-hoster who wants the one-click flow against infrastructure
-	 * they run themselves, rather than ours) without forking this file.
+	 * The "Monokulo address" setting: where Connect goes.
 	 *
 	 * @return string
 	 */
-	private function get_control_plane_base_url() {
+	private function monokulo_address() {
 		$address = self::clean_address( (string) $this->get_option( 'address', self::DEFAULT_MONOKULO_ADDRESS ) );
-		return apply_filters( 'monokulo_control_plane_base_url', null === $address ? self::DEFAULT_MONOKULO_ADDRESS : $address );
+		return null === $address ? self::DEFAULT_MONOKULO_ADDRESS : $address;
 	}
 
 	/**
@@ -1209,7 +1196,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Builds the real `GET {control_plane_base_url}/plugins/connect/{platform}?...`
+	 * Builds the real `GET {monokulo address}/plugins/connect/{platform}?...`
 	 * URL (step 1 of `connect.rs`'s own module doc comment) this gateway
 	 * sends the merchant's browser to.
 	 *
@@ -1224,7 +1211,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private function build_connect_start_url( $nonce ) {
 		return sprintf(
 			'%s/plugins/connect/%s?site_url=%s&return_url=%s&nonce=%s&name=%s',
-			rtrim( $this->get_control_plane_base_url(), '/' ),
+			rtrim( $this->monokulo_address(), '/' ),
 			rawurlencode( self::CONNECT_PLATFORM ),
 			rawurlencode( home_url( '/' ) ),
 			rawurlencode( $this->get_connect_return_url() ),
@@ -1293,7 +1280,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				<?php elseif ( $this->has_credentials() ) : ?>
 					<p>
 						<?php esc_html_e( 'Connected as', 'monokulo' ); ?>
-						<code><?php echo esc_html( $this->tenant_public_key ); ?></code>
+						<code><?php echo esc_html( $this->public_key ); ?></code>
 					</p>
 				<?php endif; ?>
 				<a href="<?php echo esc_url( $connect_url ); ?>" id="<?php echo esc_attr( $field_key ); ?>" class="button button-primary">
@@ -1305,7 +1292,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				</a>
 				<p>
 					<?php esc_html_e( 'Connects to', 'monokulo' ); ?>
-					<code><?php echo esc_html( $this->get_control_plane_base_url() ); ?></code>
+					<code><?php echo esc_html( $this->monokulo_address() ); ?></code>
 				</p>
 				<?php echo $this->get_description_html( $data ); // WPCS: XSS ok. ?>
 			</td>
@@ -1477,7 +1464,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * `POST {control_plane_base_url}/plugins/connect/{platform}/finish` (step 4-5 of
+	 * `POST {monokulo address}/plugins/connect/{platform}/finish` (step 4-5 of
 	 * `connect.rs`'s own module doc comment / its `finish` handler, read
 	 * directly): redeems the single-use connect token for real credentials.
 	 *
@@ -1524,7 +1511,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *               onion_endpoint?: string, webhook_signing_secret?: string}|null
 	 */
 	private function call_connect_finish( $token, &$status_code = 0 ) {
-		$url = rtrim( $this->get_control_plane_base_url(), '/' ) . '/plugins/connect/' . self::CONNECT_PLATFORM . '/finish';
+		$url = rtrim( $this->monokulo_address(), '/' ) . '/plugins/connect/' . self::CONNECT_PLATFORM . '/finish';
 
 		$response = wp_remote_post(
 			$url,
@@ -2334,7 +2321,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		);
 		if ( ! self::$forward_registered ) {
 			self::$forward_registered = true;
-			$url    = rtrim( $this->api_base_url, '/' ) . '/pay/' . rawurlencode( $this->tenant_public_key ) . '/logs';
+			$url    = rtrim( $this->endpoint, '/' ) . '/pay/' . rawurlencode( $this->public_key ) . '/logs';
 			$secret = $this->secret_token;
 			register_shutdown_function(
 				function () use ( $url, $secret ) {

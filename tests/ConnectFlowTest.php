@@ -31,13 +31,9 @@
 class ConnectFlowTest extends WP_UnitTestCase {
 
 	/**
-	 * The real control plane base URL this whole suite points the gateway
-	 * at, via the `monokulo_control_plane_base_url` filter
-	 * `WC_Gateway_Monokulo::get_control_plane_base_url()` exposes - a fake,
-	 * obviously-non-resolving host. The tests at the end of this file take
-	 * the filter off to check the "Monokulo address" setting itself.
+	 * The Monokulo address this suite saves before connecting.
 	 */
-	const TEST_CONTROL_PLANE_BASE_URL = 'https://control-plane.test';
+	const MONOKULO_ADDRESS = 'https://monokulo.test';
 
 	/**
 	 * @var array{url: string, args: array}|null
@@ -47,17 +43,12 @@ class ConnectFlowTest extends WP_UnitTestCase {
 	public function set_up(): void {
 		parent::set_up();
 		$this->captured_request = null;
-		add_filter( 'monokulo_control_plane_base_url', array( $this, 'filter_control_plane_base_url' ) );
+		update_option( 'woocommerce_monokulo_settings', array( 'address' => self::MONOKULO_ADDRESS ) );
 	}
 
 	public function tear_down(): void {
 		remove_all_filters( 'pre_http_request' );
-		remove_filter( 'monokulo_control_plane_base_url', array( $this, 'filter_control_plane_base_url' ) );
 		parent::tear_down();
-	}
-
-	public function filter_control_plane_base_url() {
-		return self::TEST_CONTROL_PLANE_BASE_URL;
 	}
 
 	/**
@@ -145,7 +136,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		list( $html, $nonce ) = $this->render_connect_button_and_capture_nonce();
 
 		$this->assertStringContainsString(
-			'https://control-plane.test/plugins/connect/woocommerce?',
+			'https://monokulo.test/plugins/connect/woocommerce?',
 			$html,
 			'Should link to the configured control plane\'s real GET /plugins/connect/{platform} route (connect.rs step 1).'
 		);
@@ -192,7 +183,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		// --- The /finish request actually sent. ---
 		$this->assertNotNull( $this->captured_request, 'process_connect_return() should have called /finish exactly once.' );
 		$this->assertSame(
-			'https://control-plane.test/plugins/connect/woocommerce/finish',
+			'https://monokulo.test/plugins/connect/woocommerce/finish',
 			$this->captured_request['url'],
 			'Should POST to the real, configured control plane\'s /finish route (connect.rs step 5).'
 		);
@@ -465,7 +456,6 @@ class ConnectFlowTest extends WP_UnitTestCase {
 	 * Monokulo.
 	 */
 	public function test_connect_goes_to_monokulo_com_by_default() {
-		remove_filter( 'monokulo_control_plane_base_url', array( $this, 'filter_control_plane_base_url' ) );
 		delete_option( 'woocommerce_monokulo_settings' );
 
 		list( $html ) = $this->render_connect_button_and_capture_nonce();
@@ -477,7 +467,6 @@ class ConnectFlowTest extends WP_UnitTestCase {
 	 * A saved "Monokulo address" is where Connect goes.
 	 */
 	public function test_connect_goes_to_the_saved_monokulo_address() {
-		remove_filter( 'monokulo_control_plane_base_url', array( $this, 'filter_control_plane_base_url' ) );
 		update_option( 'woocommerce_monokulo_settings', array( 'address' => 'https://pay.example.com' ) );
 
 		list( $html ) = $this->render_connect_button_and_capture_nonce();
