@@ -34,6 +34,8 @@ if ! wp core is-installed 2> /dev/null; then
 fi
 
 wp plugin activate woocommerce
+# Activating WooCommerce sends the next admin page to its setup wizard.
+wp transient delete _wc_activation_redirect > /dev/null
 # A new WooCommerce store starts in "coming soon" mode, which hides the shop
 # from customers.
 wp option update woocommerce_coming_soon no
