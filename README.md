@@ -1,11 +1,12 @@
 # Monokulo for WooCommerce
 
-Accept Monero in a WooCommerce shop through your own
-[Monokulo](https://github.com/OceanEilonwy/monokulo), the self-hosted,
-non-custodial Monero payment processor. The plugin connects the shop to a
-store in your Monokulo, creates an order there when a customer checks out,
-and marks the WooCommerce order paid when Monokulo says it is. Monokulo only
-ever holds a view key; no spend key touches the shop or Monokulo.
+Accept Monero in a WooCommerce shop through
+[Monokulo](https://github.com/OceanEilonwy/monokulo), the non-custodial
+Monero payment processor: the public one at monokulo.com, or your own. The
+plugin connects the shop to a store in your Monokulo, creates an order
+there when a customer checks out, and marks the WooCommerce order paid
+when Monokulo says it is. Monokulo only ever holds a view key; no spend key
+touches the shop or Monokulo.
 
 - WordPress **6.5** or newer, WooCommerce **8.2** or newer, PHP **8.1** or
   newer (tested on WordPress 7.1.3 and WooCommerce 11.2.1, PHP 8.1, 8.4 and

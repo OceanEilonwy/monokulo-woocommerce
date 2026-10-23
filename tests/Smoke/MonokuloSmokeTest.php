@@ -14,15 +14,17 @@ use PHPUnit\Framework\TestCase;
  *    Connect;
  * 3. on Monokulo, sets up the store for the shop, picks the wallet, and
  *    goes back to WooCommerce, which redeems the token: connected;
- * 4. a guest buys the shop's mug with Monero through WooCommerce's Store
- *    API (what the block checkout posts): the plugin creates the Monokulo
- *    order and sends them to its checkout, which loads and says pending.
+ * 4. a guest finds Monero in the block checkout, and buys the shop's mug
+ *    with it through WooCommerce's Store API (what the block checkout
+ *    posts): the plugin creates the Monokulo order and sends them to its
+ *    checkout, which loads and says pending;
+ * 5. the shop's webhook address answers, and refuses an unsigned delivery.
  *
  * Nothing is paid. Monokulo's pages are filled in by their fields' names.
  */
 final class MonokuloSmokeTest extends TestCase {
 	private const SHOP = 'http://localhost:8092/';
-	/** Monokulo's own test keys (crates/monokulo connect tests): a mainnet watch-only wallet. */
+	/** A mainnet watch-only wallet's keys, from Monokulo's own tests. */
 	private const VIEW_KEY = '0707070707070707070707070707070707070707070707070707070707070707';
 	private const SPEND_PUBLIC_KEY = '8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90';
 	private const PASSWORD = 'correct horse battery staple';
@@ -55,6 +57,10 @@ final class MonokuloSmokeTest extends TestCase {
 		$this->assertSame(200, $status->status);
 		$this->assertSame('pending', $status->json()['status']);
 		$this->assertSame(0, $status->json()['confirmations']);
+
+		// Plain permalinks: the REST API is ?rest_route=.
+		$webhook = $this->browser->post(self::SHOP . '?rest_route=/monokulo/v1/webhook', '{"event":"order.paid"}', ['Content-Type' => 'application/json']);
+		$this->assertSame(401, $webhook->status, $webhook->body);
 	}
 
 	/** A fresh Monokulo asks for its operator first; that account is the merchant's too. */
@@ -159,6 +165,13 @@ final class MonokuloSmokeTest extends TestCase {
 		$cart = $customer->get($api . 'cart')->json();
 		$methods = $cart['payment_methods'] ?? [];
 		$this->assertContains('monokulo', $methods, 'Monero is offered: ' . json_encode($methods));
+
+		// The block checkout loads the payment method's script and settings.
+		$checkout = $customer->get(self::SHOP . '?pagename=checkout');
+		$this->assertSame(200, $checkout->status, $checkout->text());
+		$this->assertStringContainsString('wp-block-woocommerce-checkout', $checkout->body, 'the block checkout');
+		$this->assertStringContainsString('/monokulo/assets/blocks.js', $checkout->body);
+		$this->assertStringContainsString('"monokulo":{"title":', rawurldecode($checkout->body), 'its title, description and icon');
 
 		$address = [
 			'first_name' => 'Ada',

@@ -60,7 +60,7 @@ final class Monokulo_Blocks_Support extends AbstractPaymentMethodType {
 	}
 
 	/**
-	 * What the script shows: `monokulo_data` in wcSettings.
+	 * What the script shows: wcSettings' payment method data for monokulo.
 	 *
 	 * @return array<string, mixed>
 	 */
