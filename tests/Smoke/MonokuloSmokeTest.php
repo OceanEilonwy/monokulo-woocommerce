@@ -21,11 +21,14 @@ require_once dirname(__DIR__) . '/fixtures/class-monokulo-api-fixtures.php';
  *    with it through WooCommerce's Store API (what the block checkout
  *    posts): the plugin makes the Monokulo order through the API and
  *    sends them to its checkout, which loads; the order, read with the
- *    store's public key, is pending; the shop's order links its page on
- *    the merchant's Monokulo dashboard, which loads for the merchant;
+ *    store's public key, is pending;
  * 5. a guest on the shop's onion address is sent to the onion checkout,
  *    or, with no onion address, told Monero can't be paid over Tor;
  * 6. the shop's webhook address answers, and refuses an unsigned delivery.
+ *
+ * No webhook is sent: with no Monero node, Monokulo's orders never move
+ * (not even to expired). The webhook vectors and the unit tests cover
+ * what deliveries do, the dashboard link in their notes included.
  *
  * And the unit tests' API fixtures are what this Monokulo's OpenAPI
  * document describes.
@@ -73,16 +76,6 @@ final class MonokuloSmokeTest extends TestCase {
 		$this->assertSame('pending', $order->json()['status']);
 		$this->assertSame(0, $order->json()['confirmations']);
 		$this->assertSame(parse_url($this->monokulo, PHP_URL_PATH) . '/checkout/' . $orderId, $order->json()['_links']['mk:checkout']['href']);
-
-		// The shop's order links its page on the merchant's dashboard, which
-		// loads for the merchant, signed in to Monokulo.
-		$shopOrder = $this->browser->get(self::SHOP . 'wp-admin/admin.php?page=wc-orders&action=edit&id=' . $placed->json()['order_id']);
-		$this->assertSame(200, $shopOrder->status);
-		$this->assertMatchesRegularExpression('#In Monokulo: (' . preg_quote($this->monokulo, '#') . '/stores/[^/]+/orders/' . preg_quote($orderId, '#') . ')#', $shopOrder->text());
-		preg_match('#In Monokulo: (' . preg_quote($this->monokulo, '#') . '/stores/[^/]+/orders/' . preg_quote($orderId, '#') . ')#', $shopOrder->text(), $m);
-		$dashboard = $this->browser->get($m[1]);
-		$this->assertSame(200, $dashboard->status, $dashboard->text());
-		$this->assertStringContainsString($orderId, $dashboard->body);
 
 		// A customer on the shop's onion address stays on Tor.
 		$onTor = $this->buyWithMonero(new Browser(['Host' => 'shop2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion']), false);
@@ -150,10 +143,11 @@ final class MonokuloSmokeTest extends TestCase {
 	/**
 	 * The fixtures are the exchanges recorded in the OpenAPI document
 	 * written at the pinned commit (MONOKULO_OPENAPI, from `cargo xtask api
-	 * openapi`; the one Monokulo serves has no examples): the entry and a
-	 * new order as the store's secret key sees them on a Monokulo with an
-	 * onion address, with the same links and forms, and the handshake's
-	 * problems.
+	 * openapi`; the one Monokulo serves has no examples), on a Monokulo
+	 * without an onion address and on one with: the entry and a new order
+	 * as the store's secret key sees them (`sk`, `sk-with-onion`), with the
+	 * same fields, links and forms, and the handshake's answers (`no-key`,
+	 * `no-key-with-onion`, and a problem for every refusal).
 	 */
 	public function test_the_api_fixtures_are_what_monokulo_answers(): void {
 		$path = (string)getenv('MONOKULO_OPENAPI');
@@ -161,32 +155,57 @@ final class MonokuloSmokeTest extends TestCase {
 		$doc = json_decode((string)file_get_contents($path), true);
 		$this->assertIsArray($doc, $path);
 
-		$entry = self::example($doc, '/api/v1', 'get', '200', 'sk');
-		$fixture = \Monokulo_Api_Fixtures::entry('', true);
-		$this->assertEqualsCanonicalizing(array_keys($entry['_links']), array_keys($fixture['_links']), 'the entry\'s links');
-		$this->assertSame(self::forms($entry), self::forms($fixture), 'the entry\'s forms');
-		$this->assertSame($entry['_links']['self']['href'], $fixture['_links']['self']['href']);
-		$this->assertSame($fixture['_links']['mk:onion-api']['href'], $entry['_links']['mk:onion-api']['href'], 'the onion entry: absolute, with no path');
+		foreach (['' => false, '-with-onion' => true] as $suffix => $onion) {
+			$entry = self::example($doc, '/api/v1', 'get', '200', 'sk' . $suffix);
+			$fixture = \Monokulo_Api_Fixtures::entry('', $onion);
+			$this->assertSame(self::hrefs($fixture), self::hrefs($entry), "the entry's links, sk$suffix");
+			$this->assertSame(self::forms($fixture), self::forms($entry), "the entry's forms, sk$suffix");
 
-		$order = self::example($doc, '/api/v1/orders', 'post', '201', 'sk');
-		$fixture = \Monokulo_Api_Fixtures::order($order['order_id'], '', true);
-		$this->assertEqualsCanonicalizing(array_keys($order), array_keys($fixture), 'the order\'s fields');
-		$this->assertEqualsCanonicalizing(array_keys($order['_links']), array_keys($fixture['_links']), 'the order\'s links');
-		foreach (['self', 'mk:checkout', 'mk:onion-checkout', 'mk:order-events', 'collection'] as $rel) {
-			$this->assertSame($order['_links'][$rel]['href'], $fixture['_links'][$rel]['href'], $rel);
+			$order = self::example($doc, '/api/v1/orders', 'post', '201', 'sk' . $suffix);
+			$fixture = \Monokulo_Api_Fixtures::order($order['order_id'], '', $onion);
+			$this->assertEqualsCanonicalizing(array_keys($fixture), array_keys($order), "the order's fields, sk$suffix");
+			$this->assertMatchesRegularExpression('#\A/stores/[^/]+/orders/' . preg_quote($order['order_id'], '#') . '\z#', $order['_links']['mk:dashboard-order']['href']);
+			$this->assertSame(
+				array_diff_key(self::hrefs($fixture), ['mk:dashboard-order' => true]),
+				array_diff_key(self::hrefs($order), ['mk:dashboard-order' => true]),
+				"the order's links, sk$suffix"
+			);
+
+			$finish = self::example($doc, '/plugins/connect/{slug}/finish', 'post', '200', 'no-key' . $suffix);
+			$fixture = \Monokulo_Api_Fixtures::finish('', $onion);
+			$this->assertEqualsCanonicalizing(array_keys($fixture), array_keys($finish), "the handshake's answer, no-key$suffix");
+			$this->assertSame($fixture['api'], $finish['api']);
+			$this->assertSame($fixture['onion_api'] ?? null, $finish['onion_api'] ?? null);
 		}
-		$this->assertMatchesRegularExpression('#\A/stores/[^/]+/orders/' . preg_quote($order['order_id'], '#') . '\z#', $order['_links']['mk:dashboard-order']['href']);
 
 		// Only the secret key is given the dashboard page.
 		$this->assertArrayNotHasKey('mk:dashboard-order', self::example($doc, '/api/v1/orders', 'post', '201', 'pk')['_links']);
 
-		$finish = $doc['paths']['/plugins/connect/{slug}/finish']['post']['responses'];
-		foreach (['400' => 'invalid-request', '401' => 'invalid-connect-code', '404' => 'not-found', '415' => 'unsupported-media-type', '503' => 'no-public-address'] as $status => $name) {
-			$problem = $finish[$status]['content']['application/problem+json']['examples'][$name]['value'] ?? null;
-			$this->assertIsArray($problem, "/finish's $status example");
-			$this->assertStringEndsWith('/' . $name, $problem['type'], "/finish's $status example");
-			$this->assertIsString($problem['detail'] ?? null, 'a detail to show');
+		// Every refusal of the handshake is a problem, named for its type.
+		foreach ($doc['paths']['/plugins/connect/{slug}/finish']['post']['responses'] as $status => $response) {
+			if ('200' === (string)$status) {
+				continue;
+			}
+			$examples = $response['content']['application/problem+json']['examples'] ?? [];
+			$this->assertNotEmpty($examples, "/finish's $status example");
+			foreach ($examples as $name => $example) {
+				$this->assertStringEndsWith('/' . $name, $example['value']['type'], "/finish's $status example");
+				$this->assertSame((int)$status, $example['value']['status'], "/finish's $status example");
+				$this->assertIsString($example['value']['detail'] ?? null, 'a detail to show');
+			}
 		}
+	}
+
+	/** @return array<string, string> each link's href, by relation (`curies` left out) */
+	private static function hrefs(array $resource): array {
+		$hrefs = [];
+		foreach ($resource['_links'] as $rel => $link) {
+			if ('curies' !== $rel) {
+				$hrefs[$rel] = $link['href'];
+			}
+		}
+		ksort($hrefs);
+		return $hrefs;
 	}
 
 	/** A recorded example's body. */
