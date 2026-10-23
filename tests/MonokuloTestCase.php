@@ -259,18 +259,21 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A webhook body: `$fields` with a fresh event id.
+	 * A webhook body: `$fields` with a fresh event id, and the order's
+	 * links as Monokulo sends them (`_links`) unless `$fields` has its own.
 	 *
 	 * @param array<string, mixed> $fields The event's fields.
 	 */
 	protected static function event( array $fields ): string {
-		return (string) wp_json_encode(
-			$fields + array(
-				'api_version' => 2,
-				'event_id'    => 'evt_' . wp_generate_password( 12, false ),
-				'created_at'  => time(),
-			)
+		$fields += array(
+			'api_version' => 2,
+			'event_id'    => 'evt_' . wp_generate_password( 12, false ),
+			'created_at'  => time(),
 		);
+		if ( is_string( $fields['order_id'] ?? null ) ) {
+			$fields += array( '_links' => Monokulo_Api_Fixtures::webhook_links( $fields['order_id'] ) );
+		}
+		return (string) wp_json_encode( $fields );
 	}
 
 	/**

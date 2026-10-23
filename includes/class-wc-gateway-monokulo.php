@@ -97,12 +97,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const META_ORDER_IDS = '_monokulo_order_ids';
 
 	/**
-	 * Order meta: each Monokulo order's page on the merchant's dashboard
-	 * (its `mk:dashboard-order` link), as a JSON object by Monokulo order id.
-	 */
-	const META_DASHBOARD_LINKS = '_monokulo_dashboard_links';
-
-	/**
 	 * Order meta: the webhook events already applied, as a JSON list.
 	 */
 	const META_APPLIED_EVENT_IDS = '_monokulo_applied_webhook_event_ids';
@@ -127,6 +121,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		'order.confirming'  => 'on-hold',
 		'order.partial'     => 'on-hold',
 		'order.expired'     => 'cancelled',
+		'order.cancelled'   => 'cancelled',
 	);
 
 	/**
@@ -349,15 +344,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			$order->add_meta_data( self::META_ORDER_IDS, $made['order_id'] );
 		}
 		/* translators: %s: the Monokulo checkout */
-		$note = sprintf( __( 'Monokulo: the customer was sent to pay here: %s', 'monokulo' ), $checkout );
-		if ( null !== $made['dashboard'] ) {
-			$links                      = self::dashboard_links( $order );
-			$links[ $made['order_id'] ] = $made['dashboard'];
-			$order->update_meta_data( self::META_DASHBOARD_LINKS, wp_json_encode( $links ) );
-			/* translators: %s: the order's page in the merchant's Monokulo dashboard */
-			$note .= ' ' . sprintf( __( 'In Monokulo: %s', 'monokulo' ), $made['dashboard'] );
-		}
-		$order->add_order_note( $note );
+		$order->add_order_note( sprintf( __( 'Monokulo: the customer was sent to pay here: %s', 'monokulo' ), $checkout ) );
 		$order->save();
 
 		return array(
@@ -411,24 +398,13 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * The order's Monokulo dashboard pages, by Monokulo order id.
-	 *
-	 * @param WC_Order $order The order.
-	 * @return array<string, string>
-	 */
-	private static function dashboard_links( WC_Order $order ): array {
-		$links = json_decode( (string) $order->get_meta( self::META_DASHBOARD_LINKS ), true );
-		return is_array( $links ) ? array_filter( $links, 'is_string' ) : array();
-	}
-
-	/**
 	 * Makes the Monokulo order with the API entry's `create-order` form,
 	 * with the store's secret key. Monokulo prices the amount in XMR.
 	 * Failures are logged in full for the merchant and thrown with a short
 	 * message for the customer.
 	 *
 	 * @param WC_Order $order The order.
-	 * @return array{order_id: string, checkout: string, onion_checkout: ?string, dashboard: ?string}
+	 * @return array{order_id: string, checkout: string, onion_checkout: ?string}
 	 *         Monokulo's order id and its links, resolved.
 	 * @throws Exception When Monokulo can't be reached or refuses.
 	 */
@@ -462,7 +438,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		if ( $status < 200 || $status > 299 ) {
 			$problem = self::problem( $raw );
-			$this->log( sprintf( 'Order creation request to %s returned HTTP %d: %s%s', $url, $status, $problem['text'], self::hint_for_status( $status ) ), 'error' );
+			$retry   = self::retry_after( $response, $raw );
+			$this->log(
+				sprintf( 'Order creation request to %s returned HTTP %d: %s%s%s', $url, $status, $problem['text'], self::hint_for_status( $status, $problem['type'] ), null !== $retry ? sprintf( ' (retry after %d s)', $retry ) : '' ),
+				503 === $status ? 'warning' : 'error'
+			);
 			throw new Exception( esc_html( self::customer_message( $status, $problem['type'] ) ) );
 		}
 
@@ -477,7 +457,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'order_id'       => $decoded['order_id'],
 			'checkout'       => $checkout,
 			'onion_checkout' => self::link( $decoded, 'mk:onion-checkout', $url ),
-			'dashboard'      => self::link( $decoded, 'mk:dashboard-order', $url ),
 		);
 	}
 
@@ -776,6 +755,24 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
+	 * How many seconds Monokulo asked to wait before trying again: its
+	 * `Retry-After` header, or the problem's `retry_after`. Null when it
+	 * didn't say.
+	 *
+	 * @param array  $response The response.
+	 * @param string $raw      Its body.
+	 */
+	private static function retry_after( array $response, string $raw ): ?int {
+		$header = trim( (string) wp_remote_retrieve_header( $response, 'retry-after' ) );
+		if ( ctype_digit( $header ) ) {
+			return (int) $header;
+		}
+		$problem = json_decode( $raw, true );
+		$seconds = is_array( $problem ) ? ( $problem['retry_after'] ?? null ) : null;
+		return is_int( $seconds ) && $seconds >= 0 ? $seconds : null;
+	}
+
+	/**
 	 * What the customer is told when Monokulo refuses an order.
 	 *
 	 * @param int    $status Monokulo's HTTP status (0 for a garbled answer).
@@ -784,6 +781,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private static function customer_message( int $status, string $type ): string {
 		if ( 429 === $status ) {
 			return __( 'Monero payments are busy right now. Please wait a moment and try again.', 'monokulo' );
+		}
+		if ( 503 === $status ) {
+			return __( 'Monero payments are unavailable for a moment. Please try again shortly.', 'monokulo' );
 		}
 		if ( 401 === $status || 403 === $status ) {
 			return __( 'Monero payments are not available for this store right now. Please contact the store owner.', 'monokulo' );
@@ -795,11 +795,18 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * A hint in the merchant's log, for statuses they can fix.
+	 * A hint in the merchant's log: what they can fix, or that it passes.
 	 *
-	 * @param int $status Monokulo's HTTP status.
+	 * @param int    $status Monokulo's HTTP status.
+	 * @param string $type   The problem's `type`, if any.
 	 */
-	private static function hint_for_status( int $status ): string {
+	private static function hint_for_status( int $status, string $type = '' ): string {
+		if ( str_ends_with( $type, '/rates-unavailable' ) ) {
+			return ' (Monokulo has no exchange rate for the order\'s currency right now: its rate providers are down or limiting it. No order was made; the customer was asked to try again shortly, and placing the order again sends the same idempotency key)';
+		}
+		if ( str_ends_with( $type, '/engine-unavailable' ) ) {
+			return ' (Monokulo\'s payment engine is busy or unreachable. No order was made; the customer was asked to try again shortly, and placing the order again sends the same idempotency key)';
+		}
 		return match ( $status ) {
 			401 => ' (the store secret key was rejected - reconnect the plugin from its settings page)',
 			403 => ' (Monokulo refused the order - check the store\'s settings on Monokulo)',
@@ -1167,14 +1174,15 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * - `order.paid`, `order.overpaid`: `payment_complete()`, which picks
 	 *   Processing or Completed, reduces stock and sends WooCommerce's emails;
 	 * - `order.unconfirmed`, `order.confirming`, `order.partial`: On hold;
-	 * - `order.expired`: Cancelled;
+	 * - `order.expired`, `order.cancelled`: Cancelled (Monokulo cancels only
+	 *   its POS's orders, never this plugin's, but one is taken as expired);
 	 * - `order.pending`: Pending (a double-spend voided every payment);
 	 * - `order.double_spend_detected`, `order.double_spend_reversed`: a note
 	 *   only. When they change the order's status, Monokulo sends that as its
 	 *   own `order.<status>` event.
 	 *
-	 * Each adds a note, with the Monokulo order's dashboard page when the
-	 * order kept it (`META_DASHBOARD_LINKS`). A shop order can have several
+	 * Each adds a note, with the Monokulo order's page on the merchant's
+	 * dashboard: the event's `mk:dashboard-order` link. A shop order can have several
 	 * Monokulo orders (a new one each time its total changed,
 	 * `META_ORDER_IDS`), and Monokulo watches them all:
 	 *
@@ -1204,6 +1212,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'order.paid'                  => __( 'Monokulo: paid in full.', 'monokulo' ),
 			'order.overpaid'              => __( 'Monokulo: paid, with more than the amount due. The excess is not refunded automatically: refund it yourself if needed.', 'monokulo' ),
 			'order.expired'               => __( 'Monokulo: the payment window closed without full payment. Any funds received stay at the payment address; refund them yourself if needed.', 'monokulo' ),
+			'order.cancelled'             => __( 'Monokulo: the order was cancelled in Monokulo and takes no payment any more. Any funds received stay at the payment address; refund them yourself if needed.', 'monokulo' ),
 			'order.pending'               => __( 'Monokulo: no payment counts towards this order any more.', 'monokulo' ),
 			/* translators: %s: transaction id */
 			'order.double_spend_detected' => sprintf( __( 'Monokulo: FRAUD ALERT. A payment to this order was double-spent and no longer counts (transaction %s). If this changed the order status, that is a separate note. Check this order before sending anything.', 'monokulo' ), $txid ),
@@ -1216,8 +1225,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return;
 		}
 
-		$page = self::dashboard_links( $order )[ $event['order_id'] ] ?? null;
-		if ( null !== $page ) {
+		$page = $event['_links']['mk:dashboard-order']['href'] ?? null;
+		if ( is_string( $page ) && preg_match( '#\Ahttps?://#i', $page ) ) {
 			/* translators: %s: the order's page in the merchant's Monokulo dashboard */
 			$note .= ' ' . sprintf( __( 'In Monokulo: %s', 'monokulo' ), $page );
 		}

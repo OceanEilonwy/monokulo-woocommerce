@@ -75,11 +75,13 @@ class WebhookVectorsTest extends MonokuloTestCase {
 				$this->assertSame( 'on-hold', $order->get_status() );
 				break;
 			case 'order.expired':
+			case 'order.cancelled':
 				$this->assertSame( 'cancelled', $order->get_status() );
 				break;
 			default:
 				$this->assertSame( 'pending', $order->get_status(), 'A double-spend note leaves the status.' );
 		}
+		$this->assertStringContainsString( 'In Monokulo: ' . $event['_links']['mk:dashboard-order']['href'], self::notes( $order ), 'Every delivery links the order\'s dashboard page.' );
 		$this->assertSame( 200, $this->deliver( $delivery['body'] ), 'Again: taken, changes nothing.' );
 	}
 }

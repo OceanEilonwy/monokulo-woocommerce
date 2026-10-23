@@ -120,6 +120,37 @@ final class Monokulo_Api_Fixtures {
 	}
 
 	/**
+	 * A webhook body's `_links`: the order as the API links it, absolute
+	 * on Monokulo's web address (`$monokulo`, with any path it is served
+	 * under), and its onion checkout when it has an onion address.
+	 *
+	 * @param string $order_id The order's id.
+	 * @param string $monokulo Monokulo's web address.
+	 * @param bool   $onion    Whether the Monokulo has an onion address.
+	 */
+	public static function webhook_links( string $order_id, string $monokulo = 'https://pay.example.com', bool $onion = false ): array {
+		$links = array(
+			'curies'             => self::curies(),
+			'mk:order'           => array( 'href' => $monokulo . '/api/v1/orders/' . $order_id ),
+			'mk:dashboard-order' => array(
+				'href' => $monokulo . '/stores/store-1/orders/' . $order_id,
+				'type' => 'text/html',
+			),
+			'mk:checkout'        => array(
+				'href' => $monokulo . '/checkout/' . $order_id,
+				'type' => 'text/html',
+			),
+		);
+		if ( $onion ) {
+			$links['mk:onion-checkout'] = array(
+				'href' => self::ONION . '/checkout/' . $order_id,
+				'type' => 'text/html',
+			);
+		}
+		return $links;
+	}
+
+	/**
 	 * The `mk` curie every resource carries.
 	 */
 	private static function curies(): array {
