@@ -1,8 +1,9 @@
 <?php
 /**
  * Paying with Monero: `process_payment()` reads the API entry with the
- * store's secret key, makes the order with its `create-order` form, and
- * sends the customer to the order's `mk:checkout` link.
+ * store's secret key (kept as its `Cache-Control` says), makes the order
+ * with its `create-order` form, and sends the customer to the order's
+ * `mk:checkout` link, or its `mk:onion-checkout` for a customer on Tor.
  *
  * @package Monokulo
  */
@@ -56,7 +57,73 @@ class CheckoutTest extends MonokuloTestCase {
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'order_deadbeef', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
 		$this->assertSame( 'pending', $order->get_status(), 'Not paid until Monokulo says so.' );
-		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/checkout/order_deadbeef', self::notes( $order ) );
+		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/checkout/order_deadbeef In Monokulo: https://pay.example.com/stores/store-1/orders/order_deadbeef', self::notes( $order ) );
+		$this->assertSame( '{"order_deadbeef":"https:\\/\\/pay.example.com\\/stores\\/store-1\\/orders\\/order_deadbeef"}', $order->get_meta( WC_Gateway_Monokulo::META_DASHBOARD_LINKS ), 'The dashboard page Monokulo linked, kept with the order.' );
+	}
+
+	/**
+	 * A Monokulo served under a path (`https://example.com/monokulo`) gives
+	 * every link with that path; the plugin builds none, so its customers
+	 * and merchant reach it.
+	 */
+	public function test_a_monokulo_under_a_path_is_reached_through_its_links() {
+		$api = 'https://example.com/monokulo/api/v1';
+		$this->monokulo_serves(
+			array(
+				'GET ' . $api                                => self::entry_response( Monokulo_Api_Fixtures::entry( '/monokulo' ) ),
+				'POST https://example.com/monokulo/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_p', '/monokulo' ) ),
+			)
+		);
+		$order  = self::order();
+		$result = self::connected_gateway( array( 'api' => $api ) )->process_payment( $order->get_id() );
+
+		$this->assertSame( array( $api, 'https://example.com/monokulo/api/v1/orders' ), wp_list_pluck( $this->sent, 'url' ) );
+		$this->assertSame( 'https://example.com/monokulo/checkout/order_p', $result['redirect'] );
+		$this->assertStringContainsString( 'In Monokulo: https://example.com/monokulo/stores/store-1/orders/order_p', self::notes( wc_get_order( $order->get_id() ) ) );
+	}
+
+	/**
+	 * A customer who came to the shop on its `.onion` address stays on Tor:
+	 * they're sent to the order's checkout on Monokulo's onion address,
+	 * though the shop's server called Monokulo on its web address.
+	 */
+	public function test_a_customer_on_tor_is_sent_to_the_onion_checkout() {
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 201, Monokulo_Api_Fixtures::order( 'order_tor', '', true ) ) ) );
+		$gateway = self::connected_gateway();
+
+		$_SERVER['HTTP_HOST'] = 'shopabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion';
+		$order                = self::order();
+		$result               = $gateway->process_payment( $order->get_id() );
+		$this->assertSame( Monokulo_Api_Fixtures::ONION . '/checkout/order_tor', $result['redirect'] );
+		$this->assertStringContainsString( 'sent to pay here: ' . Monokulo_Api_Fixtures::ONION . '/checkout/order_tor', self::notes( wc_get_order( $order->get_id() ) ) );
+
+		$_SERVER['HTTP_HOST'] = 'SHOP.onion:8080';
+		$this->assertSame( Monokulo_Api_Fixtures::ONION . '/checkout/order_tor', $gateway->process_payment( self::order()->get_id() )['redirect'], 'Any case, any port.' );
+
+		$_SERVER['HTTP_HOST'] = 'shop.example';
+		$this->assertSame( 'https://pay.example.com/checkout/order_tor', $gateway->process_payment( self::order()->get_id() )['redirect'], 'A customer on the web stays on the web.' );
+
+		$_SERVER['HTTP_HOST'] = 'onion.shop.example';
+		$this->assertSame( 'https://pay.example.com/checkout/order_tor', $gateway->process_payment( self::order()->get_id() )['redirect'] );
+	}
+
+	/**
+	 * Without an onion address the order has no `mk:onion-checkout`: a
+	 * customer on Tor is told, never sent to the web, and the merchant's
+	 * log says why.
+	 */
+	public function test_a_customer_on_tor_is_never_sent_to_the_web() {
+		$this->monokulo_serves();
+		$_SERVER['HTTP_HOST'] = 'shop.onion';
+		$order                = self::order();
+		try {
+			self::connected_gateway()->process_payment( $order->get_id() );
+			$this->fail( 'A customer on Tor must not be sent to the web checkout.' );
+		} catch ( Exception $e ) {
+			$this->assertStringContainsString( 'cannot be made over Tor', $e->getMessage() );
+		}
+		$this->assertTrue( $this->logged( 'the Monokulo has no onion address' ) );
+		$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
 	}
 
 	public function test_the_entry_is_read_once_and_kept() {
@@ -68,6 +135,94 @@ class CheckoutTest extends MonokuloTestCase {
 
 		$this->assertCount( 1, $this->sent_to( self::API ) );
 		$this->assertCount( 3, $this->sent_to( self::ORDERS ) );
+		$this->assertArrayNotHasKey( 'If-None-Match', $this->sent[0]['args']['headers'] );
+	}
+
+	/**
+	 * Once `max-age` has passed, the entry is asked for with its `ETag`; a
+	 * `304` keeps the copy for another `max-age`, a new entry replaces it.
+	 */
+	public function test_an_expired_entry_is_revalidated_with_its_etag() {
+		$this->monokulo_serves();
+		$gateway = self::connected_gateway();
+		$gateway->process_payment( self::order()->get_id() );
+		$kept = get_option( WC_Gateway_Monokulo::ENTRY_OPTION );
+		$this->assertSame( '"e1"', $kept['etag'] );
+		$this->assertEqualsWithDelta( time() + 3600, $kept['expires'], 5 );
+		$this->assertStringNotContainsString( 'sk_test', wp_json_encode( $kept ), 'The key isn\'t kept twice.' );
+
+		$expire = static function (): void {
+			$kept            = get_option( WC_Gateway_Monokulo::ENTRY_OPTION );
+			$kept['expires'] = time() - 1;
+			update_option( WC_Gateway_Monokulo::ENTRY_OPTION, $kept, false );
+		};
+		$expire();
+		$this->sent = array();
+		$this->monokulo_serves( array( 'GET ' . self::API => static fn( array $args ) => '"e1"' === ( $args['headers']['If-None-Match'] ?? '' ) ? self::response( 304, '', array( 'cache-control' => 'private, max-age=600' ) ) : self::response( 500 ) ) );
+		$gateway->process_payment( self::order()->get_id() );
+		$gateway->process_payment( self::order()->get_id() );
+		$this->assertSame( array( self::API, self::ORDERS, self::ORDERS ), wp_list_pluck( $this->sent, 'url' ), 'Not modified: kept for another max-age.' );
+		$this->assertEqualsWithDelta( time() + 600, get_option( WC_Gateway_Monokulo::ENTRY_OPTION )['expires'], 5 );
+
+		$expire();
+		$this->sent = array();
+		$moved      = Monokulo_Api_Fixtures::entry();
+		$moved['_templates']['create-order']['target'] = '/api/v1/new-orders';
+		$this->monokulo_serves(
+			array(
+				'GET ' . self::API                              => self::entry_response( $moved, 3600, '"e2"' ),
+				'POST https://pay.example.com/api/v1/new-orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_2' ) ),
+			)
+		);
+		$gateway->process_payment( self::order()->get_id() );
+		$this->assertSame( array( self::API, 'https://pay.example.com/api/v1/new-orders' ), wp_list_pluck( $this->sent, 'url' ) );
+		$this->assertSame( '"e2"', get_option( WC_Gateway_Monokulo::ENTRY_OPTION )['etag'] );
+	}
+
+	public function test_an_entry_without_a_max_age_is_read_each_time() {
+		$this->monokulo_serves( array( 'GET ' . self::API => self::response( 200, Monokulo_Api_Fixtures::entry() ) ) );
+		$gateway = self::connected_gateway();
+		$gateway->process_payment( self::order()->get_id() );
+		$gateway->process_payment( self::order()->get_id() );
+		$this->assertCount( 2, $this->sent_to( self::API ) );
+	}
+
+	public function test_a_new_connection_reads_its_own_entry() {
+		$this->monokulo_serves();
+		self::connected_gateway()->process_payment( self::order()->get_id() );
+		self::connected_gateway( array( 'secret_token' => 'sk_new' ) )->process_payment( self::order()->get_id() );
+		$this->assertCount( 2, $this->sent_to( self::API ) );
+		$this->assertSame( 'Bearer sk_new', $this->sent_to( self::API )[1]['args']['headers']['Authorization'] );
+	}
+
+	/**
+	 * A form from a kept entry that answers `401`, `404` or `405` has the
+	 * entry read again at once and the order sent once more, with the same
+	 * idempotency key: the customer never sees the API move on.
+	 */
+	public function test_a_refused_form_from_a_kept_entry_has_the_entry_read_again_at_once() {
+		foreach ( array( 401, 404, 405 ) as $status ) {
+			$this->monokulo_serves();
+			$gateway = self::connected_gateway();
+			$gateway->process_payment( self::order()->get_id() );
+
+			$this->sent = array();
+			$moved      = Monokulo_Api_Fixtures::entry();
+			$moved['_templates']['create-order']['target'] = '/api/v1/orders-moved';
+			$this->monokulo_serves(
+				array(
+					'GET ' . self::API                                => self::entry_response( $moved ),
+					'POST ' . self::ORDERS                            => self::response( $status, Monokulo_Api_Fixtures::problem( $status, 'not-found', 'Gone', '' ) ),
+					'POST https://pay.example.com/api/v1/orders-moved' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_moved' ) ),
+				)
+			);
+			$result = $gateway->process_payment( self::order()->get_id() );
+			$this->assertSame( 'https://pay.example.com/checkout/order_moved', $result['redirect'], (string) $status );
+			$this->assertSame( array( self::ORDERS, self::API, 'https://pay.example.com/api/v1/orders-moved' ), wp_list_pluck( $this->sent, 'url' ), (string) $status );
+			$bodies = array_map( static fn( array $sent ) => $sent['args']['body'] ?? null, array( $this->sent[0], $this->sent[2] ) );
+			$this->assertSame( $bodies[0], $bodies[1], 'The same order, idempotency key and all.' );
+			delete_option( WC_Gateway_Monokulo::ENTRY_OPTION );
+		}
 	}
 
 	/**
@@ -129,8 +284,8 @@ class CheckoutTest extends MonokuloTestCase {
 	}
 
 	/**
-	 * In the currency's own decimals, trailing zeros trimmed: Monokulo
-	 * refuses more than a fiat currency's two.
+	 * In the currency's own decimals, trailing zeros trimmed: what the
+	 * customer is charged, never the shop's display rounding.
 	 */
 	public function test_amounts_are_in_the_currencys_own_decimals_trimmed() {
 		$this->assertSame( '42.5', WC_Gateway_Monokulo::format_amount( 42.5, 'USD' ) );
@@ -189,9 +344,9 @@ class CheckoutTest extends MonokuloTestCase {
 
 		$cases = array(
 			'unreachable'       => array( array( $entry => new WP_Error( 'http_request_failed', 'cURL error 7' ) ), 'could not be reached', 'cURL error 7' ),
-			'entry 401'         => array( array( $entry => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'reconnect the plugin' ),
-			'entry 404'         => array( array( $entry => self::response( 404, 'Not Found' ) ), 'could not be started', 'check the Monokulo address' ),
-			'no form'           => array( array( $entry => self::response( 200, $bare ) ), 'not available for this store', 'no "create-order" form' ),
+			'entry 401'         => array( array( $entry => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'the store secret key was rejected - reconnect the plugin' ),
+			'entry 404'         => array( array( $entry => $problem( 404, 'not-found', 'Not found', 'detail 404' ) ), 'could not be started', 'check the Monokulo address' ),
+			'no form'           => array( array( $entry => self::entry_response( $bare ) ), 'could not be started', 'offers no "create-order" form' ),
 			'create unreachable' => array( array( $create => new WP_Error( 'http_request_failed', 'cURL error 28' ) ), 'could not be reached', 'cURL error 28' ),
 			'HTTP 401'          => array( array( $create => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'No valid key: detail 401 (https://docs.monokulo.com/problems/unauthorized)' ),
 			'HTTP 403'          => array( array( $create => $problem( 403, 'forbidden', 'Not allowed with this key', 'detail 403' ) ), 'not available for this store', 'Not allowed with this key' ),
@@ -204,7 +359,7 @@ class CheckoutTest extends MonokuloTestCase {
 		foreach ( $cases as $case => list( $routes, $customer, $merchant ) ) {
 			$this->logged = array();
 			$order        = self::order();
-			delete_transient( 'monokulo_entry_' . md5( self::API . "\nsk_test" ) );
+			delete_option( WC_Gateway_Monokulo::ENTRY_OPTION );
 			$this->monokulo_serves( $routes );
 			try {
 				self::connected_gateway()->process_payment( $order->get_id() );
@@ -218,6 +373,10 @@ class CheckoutTest extends MonokuloTestCase {
 		}
 	}
 
+	/**
+	 * A key refused straight after the entry was read isn't read again at
+	 * once, but the next order reads it afresh.
+	 */
 	public function test_a_refused_key_has_the_entry_read_again() {
 		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 401, Monokulo_Api_Fixtures::problem( 401, 'unauthorized', 'No valid key', '' ) ) ) );
 		$gateway = self::connected_gateway();

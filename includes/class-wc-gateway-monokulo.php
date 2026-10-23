@@ -15,11 +15,13 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Monero at checkout through Monokulo.
  *
  * - Connect (`handle_connect_return()`) stores the store's keys and the
- *   API entry Monokulo hands back (`/api/v1`), and turns the gateway on.
- * - At checkout `process_payment()` reads the entry with the store's
- *   secret key, makes the order with its `create-order` form, and sends the
- *   customer to the order's `mk:checkout` link to pay. Every URL past the
- *   entry is a link Monokulo gives.
+ *   API entry Monokulo hands back (`/api/v1`, and its onion address when it
+ *   has one), and turns the gateway on.
+ * - At checkout `process_payment()` makes the order with the entry's
+ *   `create-order` form (the entry is kept as its `Cache-Control` says),
+ *   and sends the customer to the order's `mk:checkout` link to pay, or to
+ *   its `mk:onion-checkout` when they came to the shop over Tor. Every URL
+ *   past the entry is a link Monokulo gives.
  * - Monokulo's webhooks (`process_webhook()`) move the WooCommerce order.
  *
  * Monokulo prices the order and watches the chain; the plugin never decides
@@ -35,7 +37,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	/**
 	 * The plugin's version. Kept equal to VERSION and the plugin header by a test.
 	 */
-	const VERSION = '0.3.0';
+	const VERSION = '0.4.0';
 
 	/**
 	 * The `Monokulo-Client` header: `woocommerce/<version>`.
@@ -73,9 +75,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const HAL_FORMS = 'application/prs.hal-forms+json';
 
 	/**
-	 * How long the API entry, read with the store's key, is kept, in seconds.
+	 * The option the API entry is kept in, with its `ETag` and when it
+	 * expires, for the key it was read with.
 	 */
-	const ENTRY_TTL_SECONDS = HOUR_IN_SECONDS;
+	const ENTRY_OPTION = 'monokulo_api_entry';
 
 	/**
 	 * How far, in seconds, a webhook's signed time may be from now.
@@ -94,12 +97,19 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const META_ORDER_IDS = '_monokulo_order_ids';
 
 	/**
+	 * Order meta: each Monokulo order's page on the merchant's dashboard
+	 * (its `mk:dashboard-order` link), as a JSON object by Monokulo order id.
+	 */
+	const META_DASHBOARD_LINKS = '_monokulo_dashboard_links';
+
+	/**
 	 * Order meta: the webhook events already applied, as a JSON list.
 	 */
 	const META_APPLIED_EVENT_IDS = '_monokulo_applied_webhook_event_ids';
 
 	/**
-	 * Most log entries sent to Monokulo per request; Monokulo refuses more.
+	 * Most log entries sent to Monokulo per request: its `send-logs` form
+	 * takes no more.
 	 */
 	const MAX_FORWARDED = 20;
 
@@ -126,6 +136,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @var string
 	 */
 	private string $api;
+
+	/**
+	 * The same entry on Monokulo's onion address, as the handshake gave it;
+	 * empty when it has none, or for a shop connected before 0.4.0.
+	 *
+	 * @var string
+	 */
+	private string $onion_api;
 
 	/**
 	 * The store's public key (`pk_…`).
@@ -171,6 +189,21 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private static bool $forward_registered = false;
 
 	/**
+	 * Whether the queue is being sent: what that logs isn't queued again.
+	 *
+	 * @var bool
+	 */
+	private static bool $forwarding = false;
+
+	/**
+	 * Whether the entry was read from Monokulo for the form being sent
+	 * (rather than kept), so a refused form isn't worth reading it again.
+	 *
+	 * @var bool
+	 */
+	private bool $entry_read_now = false;
+
+	/**
 	 * Sets the gateway up from its saved settings.
 	 */
 	public function __construct() {
@@ -183,11 +216,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		$this->init_form_fields();
 		$this->init_settings();
-		$this->upgrade_settings();
 
 		$this->title                  = (string) $this->get_option( 'title' );
 		$this->description            = (string) $this->get_option( 'description' );
 		$this->api                    = trim( (string) $this->get_option( 'api' ) );
+		$this->onion_api              = trim( (string) $this->get_option( 'onion_api' ) );
 		$this->public_key             = trim( (string) $this->get_option( 'public_key' ) );
 		$this->secret_token           = trim( (string) $this->get_option( 'secret_token' ) );
 		$this->webhook_signing_secret = trim( (string) $this->get_option( 'webhook_signing_secret' ) );
@@ -196,34 +229,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Settings saved by a version before Monokulo's `/api/v1` had the
-	 * checkout address (`endpoint`, `onion_endpoint`) and no API entry. The
-	 * store's key still works, so a store connected then keeps working
-	 * without connecting again: its entry is its Monokulo address's
-	 * `/api/v1`, and the old addresses go.
-	 */
-	private function upgrade_settings(): void {
-		$saved = get_option( $this->get_option_key(), array() );
-		if ( ! is_array( $saved ) || ! ( array_key_exists( 'endpoint', $saved ) || array_key_exists( 'onion_endpoint', $saved ) ) ) {
-			return;
-		}
-		if ( '' === trim( (string) ( $saved['api'] ?? '' ) ) && '' !== trim( (string) ( $saved['secret_token'] ?? '' ) ) ) {
-			// The address Connect went to; a shop connected before that
-			// setting existed has only the checkout address, on the same host.
-			$address      = self::clean_address( (string) ( $saved['address'] ?? '' ) )
-				?? self::clean_address( (string) ( $saved['endpoint'] ?? '' ) )
-				?? self::DEFAULT_MONOKULO_ADDRESS;
-			$saved['api'] = $address . '/api/v1';
-		}
-		unset( $saved['endpoint'], $saved['onion_endpoint'] );
-		update_option( $this->get_option_key(), $saved, 'yes' );
-		$this->settings = array_merge( $this->settings, $saved );
-		unset( $this->settings['endpoint'], $this->settings['onion_endpoint'] );
-	}
-
-	/**
-	 * The settings form. Connect fills in the keys; the API entry and the
-	 * webhook signing secret are saved too but never shown.
+	 * The settings form. Connect fills in the keys; the API entry, its
+	 * onion address and the webhook signing secret are saved too but never
+	 * shown.
 	 */
 	public function init_form_fields(): void {
 		$this->form_fields = array(
@@ -305,9 +313,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Creates the Monokulo order and sends the customer to pay it. The order
-	 * stays pending until a webhook says otherwise. A failure throws, and
-	 * WooCommerce shows the message to the customer.
+	 * Creates the Monokulo order and sends the customer to pay it: to its
+	 * checkout, or its checkout on Monokulo's onion address when the
+	 * customer came to the shop over Tor. The order stays pending until a
+	 * webhook says otherwise. A failure throws, and WooCommerce shows the
+	 * message to the customer.
 	 *
 	 * @param int $order_id Order ID.
 	 * @return array{result: string, redirect: string}
@@ -319,21 +329,58 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			throw new Exception( esc_html__( 'Your order could not be found. Please start the checkout again.', 'monokulo' ) );
 		}
 
-		list( $monokulo_order_id, $checkout_url ) = $this->create_monokulo_order( $order );
+		$made     = $this->create_monokulo_order( $order );
+		$checkout = $made['checkout'];
+		if ( self::customer_on_tor() ) {
+			if ( null === $made['onion_checkout'] ) {
+				$this->log( sprintf( 'A customer on the shop\'s onion address could not be sent to pay Monokulo order %s: the Monokulo has no onion address (its operator can turn on Tor), and a customer on Tor is never sent to its web address.', $made['order_id'] ), 'error' );
+				throw new Exception( esc_html__( 'Monero payments cannot be made over Tor at this store right now. Please contact the store owner.', 'monokulo' ) );
+			}
+			$checkout = $made['onion_checkout'];
+		}
 
-		$order->update_meta_data( self::META_ORDER_ID, $monokulo_order_id );
+		$order->update_meta_data( self::META_ORDER_ID, $made['order_id'] );
 		$known = array_map( static fn( WC_Meta_Data $meta ) => $meta->value, $order->get_meta( self::META_ORDER_IDS, false ) );
-		if ( ! in_array( $monokulo_order_id, $known, true ) ) {
-			$order->add_meta_data( self::META_ORDER_IDS, $monokulo_order_id );
+		if ( ! in_array( $made['order_id'], $known, true ) ) {
+			$order->add_meta_data( self::META_ORDER_IDS, $made['order_id'] );
 		}
 		/* translators: %s: the Monokulo checkout */
-		$order->add_order_note( sprintf( __( 'Monokulo: the customer was sent to pay here: %s', 'monokulo' ), $checkout_url ) );
+		$note = sprintf( __( 'Monokulo: the customer was sent to pay here: %s', 'monokulo' ), $checkout );
+		if ( null !== $made['dashboard'] ) {
+			$links                      = self::dashboard_links( $order );
+			$links[ $made['order_id'] ] = $made['dashboard'];
+			$order->update_meta_data( self::META_DASHBOARD_LINKS, wp_json_encode( $links ) );
+			/* translators: %s: the order's page in the merchant's Monokulo dashboard */
+			$note .= ' ' . sprintf( __( 'In Monokulo: %s', 'monokulo' ), $made['dashboard'] );
+		}
+		$order->add_order_note( $note );
 		$order->save();
 
 		return array(
 			'result'   => 'success',
-			'redirect' => $checkout_url,
+			'redirect' => $checkout,
 		);
+	}
+
+	/**
+	 * Whether this request came to the shop on a `.onion` host: a customer
+	 * on Tor, who must stay on it.
+	 */
+	private static function customer_on_tor(): bool {
+		$host = isset( $_SERVER['HTTP_HOST'] ) ? strtolower( sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) ) : '';
+		$host = (string) preg_replace( '/:\d+\z/', '', $host );
+		return str_ends_with( rtrim( $host, '.' ), '.onion' );
+	}
+
+	/**
+	 * The order's Monokulo dashboard pages, by Monokulo order id.
+	 *
+	 * @param WC_Order $order The order.
+	 * @return array<string, string>
+	 */
+	private static function dashboard_links( WC_Order $order ): array {
+		$links = json_decode( (string) $order->get_meta( self::META_DASHBOARD_LINKS ), true );
+		return is_array( $links ) ? array_filter( $links, 'is_string' ) : array();
 	}
 
 	/**
@@ -343,7 +390,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * message for the customer.
 	 *
 	 * @param WC_Order $order The order.
-	 * @return array{0: string, 1: string} Monokulo's order id, and its checkout.
+	 * @return array{order_id: string, checkout: string, onion_checkout: ?string, dashboard: ?string}
+	 *         Monokulo's order id and its links, resolved.
 	 * @throws Exception When Monokulo can't be reached or refuses.
 	 */
 	private function create_monokulo_order( WC_Order $order ): array {
@@ -351,8 +399,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			throw new Exception( esc_html__( 'Monero payments are not set up for this store yet. Please contact the store owner.', 'monokulo' ) );
 		}
 
-		$form     = $this->entry_form( 'create-order' );
-		$url      = $form['target'];
 		$currency = $order->get_currency();
 		$amount   = self::format_amount( (float) $order->get_total(), $currency );
 		$body     = array(
@@ -367,7 +413,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'idempotency_key'        => sprintf( 'wc:%d:%s:%s', $order->get_id(), $amount, $currency ),
 		);
 
-		$response = $this->call( $form['method'], $url, $body );
+		list( $url, $response ) = $this->submit( 'create-order', $body );
 		if ( is_wp_error( $response ) ) {
 			$this->log( sprintf( 'Order creation request to %s failed: %s', $url, $response->get_error_message() ), 'error' );
 			throw new Exception( esc_html__( 'The Monero payment service could not be reached. Please try again shortly.', 'monokulo' ) );
@@ -378,10 +424,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		if ( $status < 200 || $status > 299 ) {
 			$problem = self::problem( $raw );
-			if ( in_array( $status, array( 401, 404, 405 ), true ) ) {
-				// A replaced key, or a form that moved: read the entry afresh next time.
-				delete_transient( $this->entry_transient() );
-			}
 			$this->log( sprintf( 'Order creation request to %s returned HTTP %d: %s%s', $url, $status, $problem['text'], self::hint_for_status( $status ) ), 'error' );
 			throw new Exception( esc_html( self::customer_message( $status, $problem['type'] ) ) );
 		}
@@ -393,29 +435,61 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			throw new Exception( esc_html( self::customer_message( 0, '' ) ) );
 		}
 
-		return array( $decoded['order_id'], $checkout );
+		return array(
+			'order_id'       => $decoded['order_id'],
+			'checkout'       => $checkout,
+			'onion_checkout' => self::link( $decoded, 'mk:onion-checkout', $url ),
+			'dashboard'      => self::link( $decoded, 'mk:dashboard-order', $url ),
+		);
+	}
+
+	/**
+	 * Sends the entry's form `$name`. When the form answers `401`, `404` or
+	 * `405`, the key changed or the API moved on: the entry is dropped, and
+	 * when it was a kept copy it is read again and the form sent once more
+	 * (the order's idempotency key makes that safe).
+	 *
+	 * @param string $name The form's name (`create-order`).
+	 * @param array  $body The JSON body.
+	 * @return array{0: string, 1: array|WP_Error} Where it went, and the response.
+	 * @throws Exception When the entry can't be read or has no such form.
+	 */
+	private function submit( string $name, array $body ): array {
+		$this->entry_read_now = false;
+		$form                 = $this->entry_form( $name );
+		$response             = $this->call( $form['method'], $form['target'], $body );
+		if ( is_wp_error( $response ) || ! in_array( (int) wp_remote_retrieve_response_code( $response ), array( 401, 404, 405 ), true ) ) {
+			return array( $form['target'], $response );
+		}
+		$this->forget_entry();
+		if ( $this->entry_read_now ) {
+			return array( $form['target'], $response );
+		}
+		$form = $this->entry_form( $name );
+		return array( $form['target'], $this->call( $form['method'], $form['target'], $body ) );
 	}
 
 	/**
 	 * One call to the API with the store's secret key: a JSON body when
 	 * `$body` is given.
 	 *
-	 * @param string     $method HTTP method.
-	 * @param string     $url    Where.
-	 * @param array|null $body   The JSON body, if any.
+	 * @param string     $method  HTTP method.
+	 * @param string     $url     Where.
+	 * @param array|null $body    The JSON body, if any.
+	 * @param array      $headers More headers.
+	 * @param int        $timeout Seconds to wait.
 	 * @return array|WP_Error The response, or the error when Monokulo couldn't be reached.
 	 */
-	private function call( string $method, string $url, ?array $body = null ) {
-		$headers = array(
-			'Accept'          => self::HAL_FORMS . ', application/problem+json',
-			'Authorization'   => 'Bearer ' . $this->secret_token,
-			'Monokulo-Client' => self::CLIENT,
-			'traceparent'     => self::traceparent(),
-		);
-		$args    = array(
+	private function call( string $method, string $url, ?array $body = null, array $headers = array(), int $timeout = 30 ) {
+		$args = array(
 			'method'  => $method,
-			'headers' => $headers,
-			'timeout' => 30,
+			'headers' => $headers + array(
+				'Accept'          => self::HAL_FORMS . ', application/problem+json',
+				'Authorization'   => 'Bearer ' . $this->secret_token,
+				'Monokulo-Client' => self::CLIENT,
+				'traceparent'     => self::traceparent(),
+			),
+			'timeout' => $timeout,
 		);
 		if ( null !== $body ) {
 			$args['headers']['Content-Type'] = 'application/json';
@@ -425,61 +499,104 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * The API entry as the store's key sees it: its links and forms, read
-	 * once an hour. Unreachable or refused, it throws as an order failure
-	 * would.
+	 * The API entry as the store's key sees it: its links and forms. It is
+	 * kept as Monokulo's `Cache-Control` says (`private, max-age=…`), per
+	 * entry and key; once that has passed it is asked for again with its
+	 * `ETag`, and a `304` keeps it for another `max-age`. Unreachable or
+	 * refused, it throws as an order failure would.
 	 *
+	 * @param int $timeout Seconds to wait for Monokulo, when it is asked.
 	 * @return array The entry's `_links` and `_templates`.
 	 * @throws Exception When it can't be read.
 	 */
-	private function entry(): array {
-		$cached = get_transient( $this->entry_transient() );
-		if ( is_array( $cached ) ) {
-			return $cached;
+	private function entry( int $timeout = 30 ): array {
+		$kept = get_option( self::ENTRY_OPTION );
+		$kept = is_array( $kept ) && ( $kept['for'] ?? null ) === $this->entry_key() && is_array( $kept['entry'] ?? null ) ? $kept : null;
+		if ( null !== $kept && time() < (int) ( $kept['expires'] ?? 0 ) ) {
+			return $kept['entry'];
 		}
 
-		$response = $this->call( 'GET', $this->api );
+		$etag     = is_string( $kept['etag'] ?? null ) ? $kept['etag'] : '';
+		$response = $this->call( 'GET', $this->api, null, '' !== $etag ? array( 'If-None-Match' => $etag ) : array(), $timeout );
 		if ( is_wp_error( $response ) ) {
 			$this->log( sprintf( 'Reading the API entry at %s failed: %s', $this->api, $response->get_error_message() ), 'error' );
 			throw new Exception( esc_html__( 'The Monero payment service could not be reached. Please try again shortly.', 'monokulo' ) );
 		}
-		$status  = (int) wp_remote_retrieve_response_code( $response );
+		$this->entry_read_now = true;
+		$status               = (int) wp_remote_retrieve_response_code( $response );
+		$max_age              = self::max_age( (string) wp_remote_retrieve_header( $response, 'cache-control' ) );
+
+		if ( 304 === $status && null !== $kept ) {
+			$kept['expires'] = time() + $max_age;
+			update_option( self::ENTRY_OPTION, $kept, false );
+			return $kept['entry'];
+		}
+
 		$raw     = wp_remote_retrieve_body( $response );
 		$decoded = json_decode( $raw, true );
-		if ( 200 !== $status || ! is_array( $decoded ) || ! isset( $decoded['_links'] ) ) {
+		if ( 200 !== $status || ! is_array( $decoded ) || ! is_array( $decoded['_links'] ?? null ) ) {
 			$this->log( sprintf( 'Reading the API entry at %s returned HTTP %d: %s%s', $this->api, $status, self::problem( $raw )['text'], self::hint_for_status( $status ) ), 'error' );
 			throw new Exception( esc_html( self::customer_message( 200 === $status ? 0 : $status, '' ) ) );
 		}
 
 		$entry = array(
-			'_links'     => is_array( $decoded['_links'] ) ? $decoded['_links'] : array(),
+			'_links'     => $decoded['_links'],
 			'_templates' => is_array( $decoded['_templates'] ?? null ) ? $decoded['_templates'] : array(),
 		);
-		set_transient( $this->entry_transient(), $entry, self::ENTRY_TTL_SECONDS );
+		update_option(
+			self::ENTRY_OPTION,
+			array(
+				'for'     => $this->entry_key(),
+				'entry'   => $entry,
+				'etag'    => (string) wp_remote_retrieve_header( $response, 'etag' ),
+				'expires' => time() + $max_age,
+			),
+			false
+		);
 		return $entry;
 	}
 
 	/**
-	 * The transient the entry is kept in: one per entry and key, so a new
-	 * connection reads its own.
+	 * `max-age` from a `Cache-Control` header, in seconds; 0 (ask each
+	 * time) without one, or with `no-store` or `no-cache`.
+	 *
+	 * @param string $cache_control The header.
 	 */
-	private function entry_transient(): string {
-		return 'monokulo_entry_' . md5( $this->api . "\n" . $this->secret_token );
+	private static function max_age( string $cache_control ): int {
+		if ( preg_match( '/(?:\A|[\s,])no-(?:store|cache)(?:\z|[\s,=])/i', $cache_control ) ) {
+			return 0;
+		}
+		return preg_match( '/(?:\A|[\s,])max-age=(\d+)/i', $cache_control, $m ) ? (int) $m[1] : 0;
+	}
+
+	/**
+	 * Which entry and key the kept entry is for, so a new connection reads
+	 * its own (and the key itself isn't stored twice).
+	 */
+	private function entry_key(): string {
+		return hash( 'sha256', $this->api . "\n" . $this->secret_token );
+	}
+
+	/**
+	 * Drops the kept entry, for it to be read again.
+	 */
+	private function forget_entry(): void {
+		delete_option( self::ENTRY_OPTION );
 	}
 
 	/**
 	 * A form of the entry, its target resolved.
 	 *
-	 * @param string $name The form's name (`create-order`).
+	 * @param string $name    The form's name (`create-order`).
+	 * @param int    $timeout Seconds to wait for Monokulo, when the entry is asked.
 	 * @return array{method: string, target: string}
-	 * @throws Exception When the entry has no such form for the store's key.
+	 * @throws Exception When the entry can't be read or has no such form.
 	 */
-	private function entry_form( string $name ): array {
-		$form = $this->entry()['_templates'][ $name ] ?? null;
+	private function entry_form( string $name, int $timeout = 30 ): array {
+		$form = $this->entry( $timeout )['_templates'][ $name ] ?? null;
 		if ( ! is_array( $form ) || ! is_string( $form['target'] ?? null ) || '' === $form['target'] ) {
-			delete_transient( $this->entry_transient() );
-			$this->log( sprintf( 'The API entry at %s has no "%s" form for the store\'s key (reconnect the plugin from its settings page).', $this->api, $name ), 'error' );
-			throw new Exception( esc_html( self::customer_message( 403, '' ) ) );
+			$this->log( sprintf( 'The API entry at %s offers no "%s" form.', $this->api, $name ), 'error' );
+			throw new Exception( esc_html( self::customer_message( 0, '' ) ) );
 		}
 		return array(
 			'method' => strtoupper( is_string( $form['method'] ?? null ) ? $form['method'] : 'POST' ),
@@ -491,8 +608,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * A resource's link `$rel`, resolved against `$base`, or null.
 	 *
 	 * @param array  $hal  A decoded HAL resource.
-	 * @param string $rel      The relation (`mk:checkout`).
-	 * @param string $base     The URL the resource was read at.
+	 * @param string $rel  The relation (`mk:checkout`).
+	 * @param string $base The URL the resource was read at.
 	 */
 	private static function link( array $hal, string $rel, string $base ): ?string {
 		$href = $hal['_links'][ $rel ]['href'] ?? null;
@@ -500,8 +617,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * `$href` resolved against `$base` (RFC 3986, for the forms Monokulo
-	 * gives: absolute URLs and paths on its own host).
+	 * `$href` resolved against `$base` (RFC 3986, for the links Monokulo
+	 * gives: absolute URLs, and paths on its own host that already carry
+	 * any path it is served under).
 	 *
 	 * @param string $href A link.
 	 * @param string $base The URL it was found at.
@@ -528,21 +646,24 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * title, detail and type. Any other body is logged as it is.
 	 *
 	 * @param string $raw The response body.
-	 * @return array{text: string, type: string}
+	 * @return array{text: string, type: string, detail: string}
 	 */
 	private static function problem( string $raw ): array {
 		$problem = json_decode( $raw, true );
 		if ( ! is_array( $problem ) || ! ( isset( $problem['title'] ) || isset( $problem['detail'] ) ) ) {
 			return array(
-				'text' => $raw,
-				'type' => '',
+				'text'   => $raw,
+				'type'   => '',
+				'detail' => '',
 			);
 		}
-		$type = is_string( $problem['type'] ?? null ) ? $problem['type'] : '';
-		$text = implode( ': ', array_filter( array( (string) ( $problem['title'] ?? '' ), (string) ( $problem['detail'] ?? '' ) ) ) );
+		$type   = is_string( $problem['type'] ?? null ) ? $problem['type'] : '';
+		$detail = is_string( $problem['detail'] ?? null ) ? $problem['detail'] : '';
+		$text   = implode( ': ', array_filter( array( (string) ( $problem['title'] ?? '' ), $detail ) ) );
 		return array(
-			'text' => '' !== $type ? $text . ' (' . $type . ')' : $text,
-			'type' => $type,
+			'text'   => '' !== $type ? $text . ' (' . $type . ')' : $text,
+			'type'   => $type,
+			'detail' => $detail,
 		);
 	}
 
@@ -747,6 +868,12 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 					<?php esc_html_e( 'Connects to', 'monokulo' ); ?>
 					<code><?php echo esc_html( $this->monokulo_address() ); ?></code>
 				</p>
+				<?php if ( $this->has_credentials() && '' !== $this->onion_api ) : ?>
+					<p>
+						<?php esc_html_e( 'Customers on Tor pay on its onion address:', 'monokulo' ); ?>
+						<code><?php echo esc_html( (string) wp_parse_url( $this->onion_api, PHP_URL_HOST ) ); ?></code>
+					</p>
+				<?php endif; ?>
 				<?php echo $this->get_description_html( $data ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- WooCommerce escapes it. ?>
 			</td>
 		</tr>
@@ -808,42 +935,55 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return self::settings_url( array( 'monokulo_connect_error' => 'nonce' ) );
 		}
 
-		$status = 0;
-		$finish = $this->call_connect_finish( $token, $status );
-		if ( null === $finish ) {
-			$error = match ( $status ) {
-				0       => 'unreachable',
-				503     => 'unavailable',
-				default => 'finish',
-			};
-			return self::settings_url( array( 'monokulo_connect_error' => $error ) );
+		$finish = $this->call_connect_finish( $token );
+		if ( isset( $finish['error'] ) ) {
+			// Monokulo's own words, shown once on the settings page.
+			set_transient( self::problem_transient(), $finish['detail'] ?? '', 10 * MINUTE_IN_SECONDS );
+			return self::settings_url( array( 'monokulo_connect_error' => $finish['error'] ) );
 		}
 
 		$this->update_option( 'api', $finish['api'] );
+		$this->update_option( 'onion_api', $finish['onion_api'] );
 		$this->update_option( 'public_key', $finish['public_key'] );
 		$this->update_option( 'secret_token', $finish['secret_token'] );
 		$this->update_option( 'webhook_signing_secret', (string) ( $finish['webhook_signing_secret'] ?? '' ) );
 		$this->update_option( 'enabled', 'yes' );
+		$this->forget_entry();
 
 		return self::settings_url( array( 'monokulo_connected' => '1' ) );
 	}
 
 	/**
+	 * The transient holding what Monokulo said when connecting failed, for
+	 * the admin who tried.
+	 */
+	private static function problem_transient(): string {
+		return 'monokulo_connect_problem_' . get_current_user_id();
+	}
+
+	/**
 	 * `POST {monokulo address}/plugins/connect/woocommerce/finish`: redeems
 	 * the token for the store's keys and registers the webhook. The API
-	 * entry it names is a path, resolved here against the address called.
+	 * entry it names is a path, resolved here against the address called;
+	 * `onion_api` is absolute, and there only while Monokulo has an onion
+	 * address.
 	 *
-	 * @param string $token  The connect token.
-	 * @param int    $status Set to Monokulo's HTTP status (0 when unreachable).
-	 * @return array{public_key: string, secret_token: string, api: string}|null
-	 *         The credentials, or null on any failure (logged).
+	 * A refusal is `application/problem+json`: its name (`invalid-connect-code`,
+	 * `no-public-address`, …) becomes the settings page's error, and its
+	 * `detail` is shown there. `unreachable` is a Monokulo that didn't
+	 * answer; `finish` anything else.
+	 *
+	 * @param string $token The connect token.
+	 * @return array{public_key: string, secret_token: string, api: string, onion_api: string, webhook_signing_secret?: string}|array{error: string, detail?: string}
+	 *         The credentials, or why not (logged).
 	 */
-	private function call_connect_finish( string $token, int &$status ): ?array {
-		$url      = rtrim( $this->monokulo_address(), '/' ) . '/plugins/connect/' . self::CONNECT_SLUG . '/finish';
+	private function call_connect_finish( string $token ): array {
+		$url      = $this->monokulo_address() . '/plugins/connect/' . self::CONNECT_SLUG . '/finish';
 		$response = wp_remote_post(
 			$url,
 			array(
 				'headers' => array(
+					'Accept'          => 'application/json, application/problem+json',
 					'Content-Type'    => 'application/json',
 					'Monokulo-Client' => self::CLIENT,
 					'traceparent'     => self::traceparent(),
@@ -861,25 +1001,32 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		if ( is_wp_error( $response ) ) {
 			$this->log( sprintf( 'Connect finish request to %s failed: %s', $url, $response->get_error_message() ), 'error' );
-			return null;
+			return array( 'error' => 'unreachable' );
 		}
 
 		$status = (int) wp_remote_retrieve_response_code( $response );
 		$raw    = wp_remote_retrieve_body( $response );
 
 		if ( 200 !== $status ) {
-			$this->log( sprintf( 'Connect finish request to %s returned HTTP %d: %s', $url, $status, $raw ), 'error' );
-			return null;
+			$problem = self::problem( $raw );
+			$retry   = (string) wp_remote_retrieve_header( $response, 'retry-after' );
+			$this->log( sprintf( 'Connect finish request to %s returned HTTP %d: %s%s', $url, $status, $problem['text'], '' !== $retry ? ' (retry after ' . $retry . ' s)' : '' ), 'error' );
+			$name = sanitize_key( (string) preg_replace( '#\A.*/#', '', $problem['type'] ) );
+			return array(
+				'error'  => '' !== $name ? $name : 'finish',
+				'detail' => $problem['detail'],
+			);
 		}
 
 		$decoded = json_decode( $raw, true );
 		foreach ( array( 'public_key', 'secret_token', 'api' ) as $field ) {
 			if ( ! is_array( $decoded ) || empty( $decoded[ $field ] ) || ! is_string( $decoded[ $field ] ) ) {
 				$this->log( sprintf( 'Connect finish response from %s was not the expected shape: %s', $url, $raw ), 'error' );
-				return null;
+				return array( 'error' => 'finish' );
 			}
 		}
-		$decoded['api'] = self::resolve( $decoded['api'], $url );
+		$decoded['api']       = self::resolve( $decoded['api'], $url );
+		$decoded['onion_api'] = is_string( $decoded['onion_api'] ?? null ) ? $decoded['onion_api'] : '';
 
 		return $decoded;
 	}
@@ -988,9 +1135,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *   only. When they change the order's status, Monokulo sends that as its
 	 *   own `order.<status>` event.
 	 *
-	 * Each adds a note. A shop order can have several Monokulo orders (a new
-	 * one each time its total changed, `META_ORDER_IDS`), and Monokulo
-	 * watches them all:
+	 * Each adds a note, with the Monokulo order's dashboard page when the
+	 * order kept it (`META_DASHBOARD_LINKS`). A shop order can have several
+	 * Monokulo orders (a new one each time its total changed,
+	 * `META_ORDER_IDS`), and Monokulo watches them all:
 	 *
 	 * - a payment to any of them pays the order: the money arrived. One to an
 	 *   older request says so in the note, for the merchant to check the
@@ -1030,10 +1178,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return;
 		}
 
-		$store_id = is_string( $event['store']['id'] ?? null ) ? $event['store']['id'] : '';
-		if ( '' !== $store_id ) {
-			// The merchant's pages are on the API's host.
-			$page = self::resolve( '/stores/' . rawurlencode( $store_id ) . '/orders/' . rawurlencode( $event['order_id'] ), '' !== $this->api ? $this->api : $this->monokulo_address() );
+		$page = self::dashboard_links( $order )[ $event['order_id'] ] ?? null;
+		if ( null !== $page ) {
 			/* translators: %s: the order's page in the merchant's Monokulo dashboard */
 			$note .= ' ' . sprintf( __( 'In Monokulo: %s', 'monokulo' ), $page );
 		}
@@ -1093,7 +1239,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 	/**
 	 * Says how connecting went, on the gateway's settings page only, from
-	 * the flag `process_connect_return()` put in the address.
+	 * the flag `process_connect_return()` put in the address, with what
+	 * Monokulo said when it refused (its problem's `detail`), once.
 	 */
 	public static function render_connect_notice(): void {
 		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- only picks which notice to show.
@@ -1103,18 +1250,25 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$error   = isset( $_GET['monokulo_connect_error'] ) ? sanitize_key( wp_unslash( $_GET['monokulo_connect_error'] ) ) : null;
 		$message = match ( true ) {
 			isset( $_GET['monokulo_connected'] ) => __( 'Your store is connected. Monero is now offered at checkout.', 'monokulo' ),
-			'unavailable' === $error => __( 'Your Monokulo cannot connect shops yet: its operator has not set its public address.', 'monokulo' ),
-			'unreachable' === $error => __( 'Your Monokulo could not be reached from this shop\'s server. Check the Monokulo address, then connect again.', 'monokulo' ),
-			'nonce' === $error       => __( 'That connect link was already used or has expired. Please connect again.', 'monokulo' ),
-			null !== $error          => __( 'Monokulo did not hand over the store\'s keys. Please connect again; the log says why.', 'monokulo' ),
-			default                  => null,
+			'no-public-address' === $error    => __( 'Your Monokulo cannot connect shops yet: its operator has not set its public address. Try again later.', 'monokulo' ),
+			'unreachable' === $error          => __( 'Your Monokulo could not be reached from this shop\'s server. Check the Monokulo address, then connect again.', 'monokulo' ),
+			'nonce' === $error                => __( 'That connect link was already used or has expired. Please connect again.', 'monokulo' ),
+			'invalid-connect-code' === $error => __( 'Monokulo did not take the connect code: it was already used or has expired. Please connect again.', 'monokulo' ),
+			'rate-limited' === $error         => __( 'Monokulo is busy. Wait a minute, then connect again.', 'monokulo' ),
+			null !== $error                   => __( 'Monokulo did not hand over the store\'s keys. Please connect again; the log says why.', 'monokulo' ),
+			default                           => null,
 		};
-		$class = null === $error ? 'notice-success' : 'notice-error';
+		// phpcs:enable
 		if ( null === $message ) {
 			return;
 		}
-		// phpcs:enable
-		printf( '<div class="notice %s is-dismissible"><p>%s</p></div>', esc_attr( $class ), esc_html( $message ) );
+		$detail = null !== $error ? (string) get_transient( self::problem_transient() ) : '';
+		delete_transient( self::problem_transient() );
+		if ( '' !== $detail ) {
+			/* translators: %s: what Monokulo said */
+			$message .= ' ' . sprintf( __( 'Monokulo says: %s', 'monokulo' ), $detail );
+		}
+		printf( '<div class="notice %s is-dismissible"><p>%s</p></div>', esc_attr( null === $error ? 'notice-success' : 'notice-error' ), esc_html( $message ) );
 	}
 
 	/**
@@ -1180,7 +1334,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @param string $level   A WooCommerce log level.
 	 */
 	private function maybe_forward( string $message, string $level ): void {
-		if ( 'yes' !== $this->get_option( 'forward_errors' ) || ! $this->has_credentials()
+		if ( self::$forwarding || 'yes' !== $this->get_option( 'forward_errors' ) || ! $this->has_credentials()
 			|| ! in_array( $level, self::FORWARDED_LEVELS, true ) || count( self::$forward_queue ) >= self::MAX_FORWARDED ) {
 			return;
 		}
@@ -1191,41 +1345,38 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		);
 		if ( ! self::$forward_registered ) {
 			self::$forward_registered = true;
-			$url                      = $this->logs_url();
-			$secret                   = $this->secret_token;
-			register_shutdown_function( static fn() => self::flush_forwarded( $url, $secret ) );
+			register_shutdown_function( array( $this, 'flush_forwarded' ) );
 		}
 	}
 
 	/**
-	 * Where warnings and errors go: the entry's `mk:logs` link when it has
-	 * one, else `{entry}/logs`, where the plugin docs put it. Read from the
-	 * entry only when it is already kept, so a log line never makes a call.
+	 * Sends the queued entries with the entry's `send-logs` form, in one
+	 * request that isn't waited for. The entry is usually kept already;
+	 * when it has to be read, it is waited for briefly. Entries that can't
+	 * be sent (no form for the key, Monokulo unreachable) stay in
+	 * WooCommerce's log only.
 	 */
-	private function logs_url(): string {
-		$cached = get_transient( $this->entry_transient() );
-		$linked = is_array( $cached ) ? self::link( $cached, 'mk:logs', $this->api ) : null;
-		return $linked ?? rtrim( $this->api, '/' ) . '/logs';
-	}
-
-	/**
-	 * Sends the queued entries in one request that isn't waited for.
-	 *
-	 * @param string $url    The API's logs, `{entry}/logs`.
-	 * @param string $secret The store's secret key.
-	 */
-	public static function flush_forwarded( string $url, string $secret ): void {
+	public function flush_forwarded(): void {
 		if ( ! self::$forward_queue ) {
 			return;
 		}
 		$entries             = self::$forward_queue;
 		self::$forward_queue = array();
-		wp_remote_post(
-			$url,
+		self::$forwarding    = true;
+		try {
+			$form = $this->entry_form( 'send-logs', 3 );
+		} catch ( Exception $e ) {
+			return;
+		} finally {
+			self::$forwarding = false;
+		}
+		wp_remote_request(
+			$form['target'],
 			array(
+				'method'   => $form['method'],
 				'headers'  => array(
 					'Content-Type'    => 'application/json',
-					'Authorization'   => 'Bearer ' . $secret,
+					'Authorization'   => 'Bearer ' . $this->secret_token,
 					'Monokulo-Client' => self::CLIENT,
 					'traceparent'     => self::traceparent(),
 				),

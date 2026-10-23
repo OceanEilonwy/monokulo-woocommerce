@@ -59,6 +59,7 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 		remove_all_filters( 'pre_http_request' );
 		remove_all_filters( 'woocommerce_logging_class' );
 		$_GET = array();
+		unset( $_SERVER['HTTP_HOST'] );
 		parent::tear_down();
 	}
 
@@ -85,17 +86,19 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Answers like a connected Monokulo: the entry and order creation, from
-	 * the fixtures, unless `$routes` (`"METHOD url" => answer`) says
-	 * otherwise. Anything else is a 404 problem. Each request is recorded
-	 * in `$sent`.
+	 * Answers like a connected Monokulo: the entry (kept for an hour, as
+	 * Monokulo says), order creation and logs, from the fixtures, unless
+	 * `$routes` (`"METHOD url" => answer`) says otherwise. An answer can be
+	 * a function of the request's arguments. Anything else is a 404
+	 * problem. Each request is recorded in `$sent`.
 	 *
-	 * @param array<string, array|WP_Error> $routes Answers by method and URL.
+	 * @param array<string, array|WP_Error|callable> $routes Answers by method and URL.
 	 */
 	protected function monokulo_serves( array $routes = array() ): void {
 		$routes += array(
-			'GET ' . self::API                          => self::response( 200, Monokulo_Api_Fixtures::entry() ),
+			'GET ' . self::API                          => self::entry_response( Monokulo_Api_Fixtures::entry() ),
 			'POST https://pay.example.com/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_1' ) ),
+			'POST https://pay.example.com/api/v1/logs'   => self::response( 204 ),
 		);
 		remove_all_filters( 'pre_http_request' );
 		add_filter(
@@ -105,8 +108,9 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 					'url'  => $url,
 					'args' => $args,
 				);
-				return $routes[ ( $args['method'] ?? 'GET' ) . ' ' . $url ]
+				$answer = $routes[ ( $args['method'] ?? 'GET' ) . ' ' . $url ]
 					?? self::response( 404, Monokulo_Api_Fixtures::problem( 404, 'not-found', 'Not found', $url ) );
+				return is_callable( $answer ) ? $answer( $args ) : $answer;
 			},
 			10,
 			3
@@ -123,14 +127,35 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The entry as Monokulo answers it: kept for `$max_age` seconds, per
+	 * key, with an `ETag`.
+	 *
+	 * @param array  $entry   The entry.
+	 * @param int    $max_age Its `max-age`.
+	 * @param string $etag    Its `ETag`.
+	 */
+	protected static function entry_response( array $entry, int $max_age = 3600, string $etag = '"e1"' ): array {
+		return self::response(
+			200,
+			$entry,
+			array(
+				'cache-control' => 'private, max-age=' . $max_age,
+				'vary'          => 'Authorization',
+				'etag'          => $etag,
+			)
+		);
+	}
+
+	/**
 	 * An HTTP response with a JSON (or raw) body.
 	 *
-	 * @param int          $code Status.
-	 * @param array|string $body JSON body, or a raw one.
+	 * @param int          $code    Status.
+	 * @param array|string $body    JSON body, or a raw one.
+	 * @param array        $headers Its headers, names in lower case.
 	 */
-	protected static function response( int $code, array|string $body = '' ): array {
+	protected static function response( int $code, array|string $body = '', array $headers = array() ): array {
 		return array(
-			'headers'  => array(),
+			'headers'  => $headers,
 			'body'     => is_array( $body ) ? wp_json_encode( $body ) : $body,
 			'response' => array(
 				'code'    => $code,
