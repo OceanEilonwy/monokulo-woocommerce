@@ -6,6 +6,7 @@
 #   scripts/test install            build the zip and install it in the shop with WP-CLI
 #   scripts/test wordpress|smoke [phpunit args]
 #   scripts/test all                install, then the wordpress suite
+#   scripts/test lint               WordPress Coding Standards (.phpcs.xml.dist)
 #   scripts/test down               stop and remove the containers
 #
 # Coverage: COVERAGE=1 has the wordpress suite write coverage/summary.txt
@@ -55,8 +56,12 @@ smoke)
 	shift
 	run vendor/bin/phpunit -c phpunit.smoke.xml "$@"
 	;;
+lint)
+	shift
+	run vendor/bin/phpcs "$@"
+	;;
 *)
-	echo "usage: scripts/test up|install|wordpress|smoke|all|down" >&2
+	echo "usage: scripts/test up|install|wordpress|smoke|lint|all|down" >&2
 	exit 2
 	;;
 esac

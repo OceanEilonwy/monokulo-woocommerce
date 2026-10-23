@@ -138,6 +138,7 @@ with WooCommerce 11.2.1 at `http://localhost:8092/`, with MariaDB.
 scripts/test up          # build and start WordPress (PHP_VERSION=8.1|8.4|8.5, default 8.4)
 scripts/test all         # build the zip, install it in the shop, run the wordpress suite
 scripts/test wordpress   # just the suite (extra args go to PHPUnit)
+scripts/test lint        # WordPress Coding Standards and PHP 8.1 compatibility
 COVERAGE=1 scripts/test all   # and coverage/summary.txt, coverage/html/
 scripts/smoke            # against a real Monokulo (MONOKULO_BIN=path or MONOKULO_IMAGE=image)
 scripts/test down

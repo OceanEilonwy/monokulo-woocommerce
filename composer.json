@@ -1,13 +1,16 @@
 {
     "name": "monokulo/woocommerce",
-    "description": "Monokulo payment gateway for WooCommerce: accept Monero through your own self-hosted Monokulo. This file is for the plugin's tests only: the plugin has no runtime dependencies beyond WordPress and WooCommerce.",
+    "description": "Monokulo for WooCommerce. Development dependencies only (tests and linting): the plugin needs nothing beyond WordPress and WooCommerce.",
     "license": "GPL-2.0-or-later",
     "type": "wordpress-plugin",
     "require": {
         "php": ">=8.1"
     },
     "require-dev": {
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+        "phpcompatibility/phpcompatibility-wp": "^2.1",
         "phpunit/phpunit": "^9.6",
+        "wp-coding-standards/wpcs": "^3.1",
         "yoast/phpunit-polyfills": "^4.0"
     },
     "autoload-dev": {
@@ -19,7 +22,10 @@
         "platform": {
             "php": "8.1.0"
         },
-        "sort-packages": true
+        "sort-packages": true,
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
     },
     "minimum-stability": "stable"
 }
