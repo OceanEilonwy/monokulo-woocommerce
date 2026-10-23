@@ -9,7 +9,8 @@ namespace Monokulo\WooCommerce\Tests\Smoke;
 final class Browser {
 	private string $jar;
 
-	public function __construct() {
+	/** @param array<string, string> $headers sent with every request (`Host`, for a visitor on another address) */
+	public function __construct(private readonly array $headers = []) {
 		$this->jar = tempnam(sys_get_temp_dir(), 'jar');
 	}
 
@@ -52,7 +53,7 @@ final class Browser {
 	private function request(string $method, string $url, array|string|null $body, array $headers): Page {
 		$curl = curl_init($url);
 		$lines = [];
-		foreach ($headers as $name => $value) {
+		foreach ($headers + $this->headers as $name => $value) {
 			$lines[] = $name . ': ' . $value;
 		}
 		$options = [

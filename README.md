@@ -39,22 +39,31 @@ touches the shop or Monokulo.
    A store you made without a site can take the shop's: add the site in
    the store's settings (the *Store* card), then connect.
 4. You're back on the plugin's settings, connected. Connecting saves the
-   store's keys and where Monokulo's API is, and turns Monero on at
-   checkout.
+   store's keys and where Monokulo's API is (and its onion address, when
+   it has one), and turns Monero on at checkout. When Monokulo refuses,
+   the settings page says why, in Monokulo's words.
 
 Monokulo only sends the connect flow back to the shop over **https** (plain
-http only for `localhost` or a `.onion` address).
+http only for `localhost` or a `.onion` address). A Monokulo served under
+a path works: type its address with the path
+(`https://example.com/monokulo`).
 
 Any Monokulo store can do everything at once: take payments at the till,
 show the checkout on your own pages, and take WooCommerce orders.
 
-### Updating from a version before Monokulo's API
+### Updating from 0.3.0
 
-A shop connected by an earlier version of the plugin keeps working after
-the update, without connecting again: the plugin finds the API at its
-Monokulo address's `/api/v1` with the key it already has. (It forgets the
-old checkout and onion addresses; customers now pay at the checkout link
-Monokulo gives each order.)
+A shop connected by 0.3.0 keeps working after the update, without
+connecting again: its keys and API entry are the same.
+
+- Customers on the shop's `.onion` address are sent to Monokulo's onion
+  checkout straight away: each order carries its own.
+- The settings page shows Monokulo's onion address only after you
+  **Connect again**.
+- Orders made before the update have no link to their page in Monokulo's
+  dashboard, so their later notes have none either; new orders have it.
+
+Shops connected by a version older than 0.3.0 connect again.
 
 ### While it's connected
 
@@ -83,11 +92,27 @@ The plugin uses Monokulo's [HTTP API](https://docs.monokulo.com/api/) from
 the shop's server, with the store's secret key, and names itself
 (`Monokulo-Client: woocommerce/<version>`), so the store's Orders page in
 Monokulo shows those orders as *WooCommerce*. It reads the API's entry
-(`/api/v1`, kept for an hour), makes the order with the entry's
-`create-order` form, and sends the customer to the order's checkout link
-(`/checkout/<order id>` on your Monokulo). When Monokulo refuses an order,
-the customer gets a short message and the log gets Monokulo's problem: its
-title, what went wrong, and the problem's page.
+(`/api/v1`), makes the order with the entry's `create-order` form, and
+sends the customer to the order's checkout link (`/checkout/<order id>` on
+your Monokulo). Every address past the entry is a link Monokulo gives, so
+a Monokulo under a path works too. The entry is kept as Monokulo's
+`Cache-Control` says (an hour), checked again with its `ETag` after that,
+and read again at once if Monokulo refuses a form from it: making an
+order is usually one request. When Monokulo refuses an order, the customer
+gets a short message and the log gets Monokulo's problem: its title, what
+went wrong, and the problem's page.
+
+The order's first note links its page on your Monokulo dashboard, as
+Monokulo links it.
+
+### Customers on Tor
+
+A customer who reached the shop on its own `.onion` address stays on Tor:
+the plugin sends them to the order's checkout on your Monokulo's onion
+address, though the shop's server talks to Monokulo on its web address.
+If your Monokulo has no onion address, such a customer is told Monero
+can't be paid over Tor right now (never sent to the web), and the log
+says why: ask your Monokulo's operator to turn Tor on.
 
 The amount is sent in the currency's own decimals, trailing zeros
 trimmed: `42.5` for EUR 42.50, `1500` for JPY 1,500.
@@ -119,7 +144,7 @@ before changes nothing.
 | `order.double_spend_reversed` | A note |
 
 Every event adds a note to the order, with a link to the order in your
-Monokulo. A WooCommerce order can have several Monokulo orders: paying
+Monokulo's dashboard. A WooCommerce order can have several Monokulo orders: paying
 again after its total changed sends the customer to a new one. The plugin
 remembers them all, and Monokulo keeps watching them all:
 
@@ -138,11 +163,13 @@ funds from your wallet yourself.
 The plugin logs through WooCommerce (**WooCommerce > Status > Logs**,
 source `monokulo`), each line with the request's trace id, which matches
 Monokulo's own logs. **Send errors to Monokulo** also sends its warnings and
-errors to your Monokulo, when the store there accepts client logs.
+errors to your Monokulo (with the entry's `send-logs` form), when the store
+there accepts client logs.
 
 ## Removing the plugin
 
-Deleting the plugin in WordPress removes its settings. Orders keep their
+Deleting the plugin in WordPress removes its settings and the API entry
+it kept. Orders keep their
 Monokulo order ids and notes. Disconnect the shop in Monokulo too (see
 above), so it stops sending webhooks.
 
