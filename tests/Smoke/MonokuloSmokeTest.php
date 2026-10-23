@@ -24,7 +24,11 @@ require_once dirname(__DIR__) . '/fixtures/class-monokulo-api-fixtures.php';
  *    store's public key, is pending;
  * 5. a guest on the shop's onion address is sent to the onion checkout,
  *    or, with no onion address, told Monero can't be paid over Tor;
- * 6. the shop's webhook address answers, and refuses an unsigned delivery.
+ * 6. the shop's webhook address answers, and refuses an unsigned delivery;
+ * 7. with the shop in euros, which Monokulo's stand-in rate provider
+ *    (tests/Smoke/fake-rates.php) rate limits, Monokulo answers
+ *    `rates-unavailable` and the customer is asked to try again shortly;
+ *    the merchant's log says when Monokulo said to try again.
  *
  * No webhook is sent: with no Monero node, Monokulo's orders never move
  * (not even to expired). The webhook vectors and the unit tests cover
@@ -90,6 +94,37 @@ final class MonokuloSmokeTest extends TestCase {
 		// Plain permalinks: the REST API is ?rest_route=.
 		$webhook = $this->browser->post(self::SHOP . '?rest_route=/monokulo/v1/webhook', '{"event":"order.paid"}', ['Content-Type' => 'application/json']);
 		$this->assertSame(401, $webhook->status, $webhook->body);
+
+		// No exchange rate for the order's currency: Monokulo makes no order,
+		// and the customer is asked to try again shortly.
+		$logged = substr_count(self::merchantLog(), 'rates-unavailable) (Monokulo has no exchange rate');
+		$this->setShopCurrency('EUR');
+		try {
+			$noRate = $this->buyWithMonero(new Browser(), false);
+			$this->assertSame(400, $noRate->status, $noRate->body);
+			$this->assertStringContainsString('Monero payments are unavailable for a moment. Please try again shortly.', $noRate->body);
+			$this->assertSame($logged + 1, substr_count(self::merchantLog(), 'rates-unavailable) (Monokulo has no exchange rate'), 'logged for the merchant');
+			$this->assertMatchesRegularExpression('#rates-unavailable\) \(Monokulo has no exchange rate[^\n]*\(retry after 120 s\)\s*\[trace [0-9a-f]{32}\][^\n]*\n?\z#', self::merchantLog(), 'with Monokulo\'s Retry-After');
+		} finally {
+			$this->setShopCurrency('USD');
+		}
+	}
+
+	/** The plugin's WooCommerce logs (this suite runs in the shop's container). */
+	private static function merchantLog(): string {
+		$files = glob('/var/www/html/wp-content/uploads/wc-logs/monokulo-*.log') ?: [];
+		sort($files);
+		return implode('', array_map('file_get_contents', $files));
+	}
+
+	/** Sets the shop's currency on WooCommerce's general settings, as the merchant would. */
+	private function setShopCurrency(string $currency): void {
+		$url = self::SHOP . 'wp-admin/admin.php?page=wc-settings&tab=general';
+		$settings = $this->browser->get($url);
+		$this->assertSame(200, $settings->status, $settings->text());
+		$saved = $this->browser->post($url, ['woocommerce_currency' => $currency, 'save' => 'Save changes'] + $settings->form('')['fields']);
+		$this->assertContains($saved->status, [200, 302], $saved->text());
+		$this->assertSame($currency, $this->browser->get($url)->form('')['fields']['woocommerce_currency'] ?? null, "the shop is in $currency");
 	}
 
 	/**

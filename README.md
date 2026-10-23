@@ -221,7 +221,10 @@ the one `scripts/smoke` starts on port 18092.
   `.onion` address is sent to the onion checkout, or told Tor can't be
   used when there's none. Nothing is paid, so no webhook is sent (with no
   Monero node an order never moves, not even to expired): the vectors and
-  the wordpress suite cover deliveries. It also checks the wordpress suite's API fixtures
+  the wordpress suite cover deliveries. Monokulo prices from a stand-in
+  for CoinGecko (`tests/Smoke/fake-rates.php`) that rate limits euros, so
+  a guest paying in euros meets a real `rates-unavailable` and is asked to
+  try again shortly. It also checks the wordpress suite's API fixtures
   (`tests/fixtures`) against that Monokulo's OpenAPI document. The shop
   forgets its connection before each run. `SMOKE_ONLY=web` or `onion`
   runs one.

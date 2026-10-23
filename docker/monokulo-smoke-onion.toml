@@ -25,6 +25,10 @@ mode = "public"
 [webhooks]
 allow_private_urls = true
 
+[exchange_rate]
+coingecko_base_url = "http://localhost:18095"
+coinmarketcap_enabled = false
+
 [engine.monero_node]
 mainnet = { host = "127.0.0.1", port = 18089, ssl = false }
 

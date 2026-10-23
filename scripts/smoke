@@ -10,6 +10,9 @@
 #          (docker/monokulo-smoke-onion.toml; no tor runs, Monokulo only
 #          needs to know its address).
 #
+# Both price from a stand-in for CoinGecko (tests/Smoke/fake-rates.php,
+# served from the shop's container on 18095).
+#
 # Before each, the shop forgets any connection. The shop must be up and
 # the plugin installed (scripts/test up && scripts/test install).
 #
@@ -48,9 +51,22 @@ stop() {
 	docker stop monokulo-woocommerce-smoke-proxy > /dev/null 2>&1 || true
 }
 
+# The stand-in for CoinGecko (tests/Smoke/fake-rates.php), in the shop's
+# container, on this machine's network.
+serve_rates() {
+	docker compose -f docker/compose.yaml exec -T -d -w /repo wordpress \
+		sh -c 'echo $$ > /tmp/smoke-rates.pid; exec php -S localhost:18095 tests/Smoke/fake-rates.php'
+}
+
+unserve_rates() {
+	docker compose -f docker/compose.yaml exec -T wordpress \
+		sh -c 'test -f /tmp/smoke-rates.pid && kill "$(cat /tmp/smoke-rates.pid)" && rm -f /tmp/smoke-rates.pid' > /dev/null 2>&1 || true
+}
+
 cleanup() {
 	status=$?
 	stop
+	unserve_rates
 	if [ "$status" != 0 ] && [ -n "$data" ]; then
 		echo "--- Monokulo's log ---"
 		tail -n 100 "$data/monokulo.log" 2>/dev/null || true
@@ -95,6 +111,8 @@ smoke() {
 	rm -rf "$data"
 	data=
 }
+
+serve_rates
 
 case "${SMOKE_ONLY:-}" in
 '' | web)

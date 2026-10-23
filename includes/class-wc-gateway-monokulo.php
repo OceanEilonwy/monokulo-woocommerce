@@ -81,6 +81,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const ENTRY_OPTION = 'monokulo_api_entry';
 
 	/**
+	 * The option holding the version whose upgrade last ran.
+	 */
+	const VERSION_OPTION = 'monokulo_version';
+
+	/**
 	 * How far, in seconds, a webhook's signed time may be from now.
 	 */
 	const SIGNATURE_TOLERANCE_SECONDS = 300;
@@ -197,6 +202,28 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @var bool
 	 */
 	private bool $entry_read_now = false;
+
+	/**
+	 * Brings what an earlier version stored up to this one, once per
+	 * version: the order meta in which builds before 0.4.0 kept each
+	 * order's dashboard link (`_monokulo_dashboard_links`) is deleted, now
+	 * that every webhook carries it.
+	 */
+	public static function upgrade(): void {
+		if ( self::VERSION === get_option( self::VERSION_OPTION ) ) {
+			return;
+		}
+		global $wpdb;
+		delete_post_meta_by_key( '_monokulo_dashboard_links' );
+		$orders_meta = $wpdb->prefix . 'wc_orders_meta';
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery -- a one-off clean-up of WooCommerce's order meta table, which has no API to delete by key.
+		if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $orders_meta ) ) === $orders_meta ) {
+			$wpdb->delete( $orders_meta, array( 'meta_key' => '_monokulo_dashboard_links' ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+			wp_cache_flush_group( 'orders' );
+		}
+		// phpcs:enable
+		update_option( self::VERSION_OPTION, self::VERSION );
+	}
 
 	/**
 	 * Sets the gateway up from its saved settings.

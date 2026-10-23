@@ -49,6 +49,16 @@ function monokulo_load(): void {
 add_action( 'plugins_loaded', 'monokulo_load' );
 
 /**
+ * Runs the gateway's upgrade once WooCommerce is up (once per version).
+ */
+function monokulo_upgrade(): void {
+	if ( class_exists( 'WC_Gateway_Monokulo' ) ) {
+		WC_Gateway_Monokulo::upgrade();
+	}
+}
+add_action( 'woocommerce_init', 'monokulo_upgrade' );
+
+/**
  * Adds the gateway to WooCommerce's payment methods.
  *
  * @param array $gateways Gateway class names or instances.

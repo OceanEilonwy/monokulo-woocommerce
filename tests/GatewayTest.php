@@ -59,10 +59,36 @@ class GatewayTest extends MonokuloTestCase {
 		$this->assertStringContainsString( 'section=monokulo', $links[0] );
 	}
 
+	/**
+	 * Builds before 0.4.0 kept each order's dashboard link in its meta;
+	 * every webhook carries it now, so the upgrade deletes what they kept,
+	 * once, and leaves the rest of the order alone.
+	 */
+	public function test_the_upgrade_deletes_the_dashboard_links_earlier_builds_kept() {
+		$order = self::order_paying( 'mko_kept_link' );
+		$order->update_meta_data( '_monokulo_dashboard_links', '{"mko_kept_link":"https://pay.example.com/stores/store-1/orders/mko_kept_link"}' );
+		$order->save();
+		delete_option( WC_Gateway_Monokulo::VERSION_OPTION );
+
+		WC_Gateway_Monokulo::upgrade();
+
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( '', $order->get_meta( '_monokulo_dashboard_links' ) );
+		$this->assertSame( 'mko_kept_link', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+		$this->assertSame( WC_Gateway_Monokulo::VERSION, get_option( WC_Gateway_Monokulo::VERSION_OPTION ) );
+
+		$order->update_meta_data( '_monokulo_dashboard_links', '{}' );
+		$order->save();
+		WC_Gateway_Monokulo::upgrade();
+		$this->assertSame( '{}', wc_get_order( $order->get_id() )->get_meta( '_monokulo_dashboard_links' ), 'Once per version.' );
+	}
+
 	public function test_deleting_the_plugin_removes_its_settings() {
 		self::connected_gateway();
+		WC_Gateway_Monokulo::upgrade();
 		define( 'WP_UNINSTALL_PLUGIN', 'monokulo/monokulo.php' );
 		require dirname( __DIR__ ) . '/uninstall.php';
 		$this->assertFalse( get_option( 'woocommerce_monokulo_settings' ) );
+		$this->assertFalse( get_option( WC_Gateway_Monokulo::VERSION_OPTION ) );
 	}
 }
