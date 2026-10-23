@@ -18,10 +18,20 @@
 #   MONOKULO_IMAGE=ghcr.io/...       its Docker image (the default:
 #                                    monokulo:smoke, built by CI from the
 #                                    commit in tests/vectors/PIN)
+# MONOKULO_OPENAPI (default dist/openapi.json) is the OpenAPI document
+# written at the same commit, with its recorded exchanges, which the
+# suite checks the unit tests' fixtures against. In a monokulo checkout at
+# that commit:
+#   cargo xtask api openapi --out <this repository>/dist/openapi.json
 # SMOKE_ONLY=web|onion runs one of the two.
 set -eu
 cd "$(dirname "$0")/.."
 
+openapi=${MONOKULO_OPENAPI:-dist/openapi.json}
+if [ ! -s "$openapi" ]; then
+	echo "scripts/smoke: no OpenAPI document at $openapi (see the top of this script)" >&2
+	exit 2
+fi
 onion=http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion
 data=
 pid=
@@ -80,7 +90,7 @@ smoke() {
 	docker compose -f docker/compose.yaml exec -T wordpress sh -c \
 		'wp --allow-root --path=/var/www/html option delete woocommerce_monokulo_settings monokulo_api_entry' > /dev/null 2>&1 || true
 
-	MONOKULO_URL=$url MONOKULO_ONION=$onion_uri scripts/test smoke "$@"
+	MONOKULO_URL=$url MONOKULO_ONION=$onion_uri MONOKULO_OPENAPI=$openapi scripts/test smoke "$@"
 	stop
 	rm -rf "$data"
 	data=

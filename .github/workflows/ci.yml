@@ -9,8 +9,9 @@
 #   WordPress Coding Standards (scripts/test lint).
 # - vectors: the vendored vectors are still the ones at the pinned commit.
 # - smoke: against a real Monokulo built from the pinned commit (or a given
-#   image): on main, nightly and by hand, not on pull requests (building
-#   Monokulo takes a while).
+#   image), twice: at its host's root, and under a path behind a proxy with
+#   an onion address (scripts/smoke). On main, nightly and by hand, not on
+#   pull requests (building Monokulo takes a while).
 name: CI
 
 on:
@@ -115,6 +116,20 @@ jobs:
           . tests/vectors/PIN
           auth=${MONOKULO_READ_TOKEN:+x-access-token:$MONOKULO_READ_TOKEN@}
           docker build -t monokulo:smoke "https://${auth}${repository#https://}.git#${commit}"
+      # The OpenAPI document with Monokulo's recorded exchanges, which the
+      # unit tests' fixtures are checked against (the served one has none).
+      # rustup installs the toolchain the repository names.
+      - name: Write Monokulo's OpenAPI document at the pinned commit
+        env:
+          MONOKULO_READ_TOKEN: ${{ secrets.MONOKULO_READ_TOKEN }}
+        run: |
+          . tests/vectors/PIN
+          auth=${MONOKULO_READ_TOKEN:+x-access-token:$MONOKULO_READ_TOKEN@}
+          git init -q "$RUNNER_TEMP/monokulo"
+          cd "$RUNNER_TEMP/monokulo"
+          git fetch -q --depth 1 "https://${auth}${repository#https://}.git" "$commit"
+          git checkout -q FETCH_HEAD
+          cargo xtask api openapi --out "$GITHUB_WORKSPACE/dist/openapi.json"
       - name: Start WordPress and install the plugin
         run: |
           scripts/test up

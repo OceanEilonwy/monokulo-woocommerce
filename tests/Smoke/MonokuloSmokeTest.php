@@ -102,30 +102,109 @@ final class MonokuloSmokeTest extends TestCase {
 	/**
 	 * The unit tests answer with Monokulo_Api_Fixtures: each of their
 	 * fields, links and forms is one this Monokulo's OpenAPI document
-	 * (linked from the entry as `service-desc`) has.
+	 * (linked from the entry as `service-desc`) has, and the pages and
+	 * problems the plugin relies on are there.
 	 */
 	public function test_the_api_fixtures_are_what_monokulo_describes(): void {
 		$entry = $this->browser->get($this->monokulo . '/api/v1');
 		$this->assertSame(200, $entry->status, $entry->body);
 		$href = $entry->json()['_links']['service-desc']['href'] ?? null;
 		$this->assertIsString($href, 'the entry links its OpenAPI document');
-		$openapi = $this->browser->get($this->monokulo . $href);
+		// Under a path, the link has it: it is resolved against the host.
+		$openapi = $this->browser->get(preg_replace('#\A(https?://[^/]+).*\z#', '$1', $this->monokulo) . $href);
 		$this->assertSame(200, $openapi->status);
 		$doc = $openapi->json();
 
 		$entryPath = $doc['paths']['/api/v1']['get'] ?? null;
 		$this->assertIsArray($entryPath, 'GET /api/v1');
-		$this->assertMatchesFixture($doc, self::okSchema($doc, $entryPath, '200'), \Monokulo_Api_Fixtures::entry(), 'entry');
+		$this->assertMatchesFixture($doc, self::okSchema($doc, $entryPath, '200'), \Monokulo_Api_Fixtures::entry('', true), 'entry');
+		foreach (['Cache-Control', 'ETag', 'Vary'] as $header) {
+			$this->assertArrayHasKey($header, $entryPath['responses']['200']['headers'] ?? [], "the entry is kept by its $header");
+		}
 
 		$create = $doc['paths']['/api/v1/orders']['post'] ?? null;
 		$this->assertIsArray($create, 'POST /api/v1/orders');
-		$this->assertMatchesFixture($doc, self::okSchema($doc, $create, '201'), \Monokulo_Api_Fixtures::order('order_1'), 'order');
+		$this->assertMatchesFixture($doc, self::okSchema($doc, $create, '201'), \Monokulo_Api_Fixtures::order('order_1', '', true), 'order');
 		// What the plugin sends to create-order is what it takes.
 		$takes = self::deref($doc, reset($create['requestBody']['content'])['schema'])['properties'] ?? [];
 		foreach (['amount', 'currency', 'merchant_order_id', 'show_merchant_order_id', 'description', 'idempotency_key'] as $field) {
 			$this->assertArrayHasKey($field, $takes, "create-order takes $field");
 		}
-		$this->assertArrayHasKey('/api/v1/logs', $doc['paths'], 'where logs go');
+		$logs = self::deref($doc, reset($doc['paths']['/api/v1/logs']['post']['requestBody']['content'])['schema']);
+		$this->assertArrayHasKey('entries', $logs['properties'] ?? [], 'send-logs takes entries');
+
+		// The pages the plugin sends people to.
+		foreach (['/checkout/{order_id}' => 'mk:checkout', '/stores/{id}/orders/{order_id}' => 'mk:dashboard-order'] as $path => $rel) {
+			$this->assertArrayHasKey('text/html', $doc['paths'][$path]['get']['responses']['200']['content'] ?? [], "$rel is a page");
+		}
+
+		// The handshake: what the plugin keeps, and the problems it tells apart.
+		$finish = $doc['paths']['/plugins/connect/{slug}/finish']['post'] ?? null;
+		$this->assertIsArray($finish, 'POST /plugins/connect/{slug}/finish');
+		$this->assertMatchesFixture($doc, self::okSchema($doc, $finish, '200'), \Monokulo_Api_Fixtures::finish('', true), 'finish');
+		foreach (['400', '401', '404', '413', '415', '429', '500', '503'] as $status) {
+			$this->assertArrayHasKey('application/problem+json', $finish['responses'][$status]['content'] ?? [], "/finish answers $status as a problem");
+		}
+	}
+
+	/**
+	 * The fixtures are the exchanges recorded in the OpenAPI document
+	 * written at the pinned commit (MONOKULO_OPENAPI, from `cargo xtask api
+	 * openapi`; the one Monokulo serves has no examples): the entry and a
+	 * new order as the store's secret key sees them on a Monokulo with an
+	 * onion address, with the same links and forms, and the handshake's
+	 * problems.
+	 */
+	public function test_the_api_fixtures_are_what_monokulo_answers(): void {
+		$path = (string)getenv('MONOKULO_OPENAPI');
+		$this->assertNotSame('', $path, 'Set MONOKULO_OPENAPI to the OpenAPI document written at the pinned commit (scripts/smoke says how).');
+		$doc = json_decode((string)file_get_contents($path), true);
+		$this->assertIsArray($doc, $path);
+
+		$entry = self::example($doc, '/api/v1', 'get', '200', 'sk');
+		$fixture = \Monokulo_Api_Fixtures::entry('', true);
+		$this->assertEqualsCanonicalizing(array_keys($entry['_links']), array_keys($fixture['_links']), 'the entry\'s links');
+		$this->assertSame(self::forms($entry), self::forms($fixture), 'the entry\'s forms');
+		$this->assertSame($entry['_links']['self']['href'], $fixture['_links']['self']['href']);
+		$this->assertSame($fixture['_links']['mk:onion-api']['href'], $entry['_links']['mk:onion-api']['href'], 'the onion entry: absolute, with no path');
+
+		$order = self::example($doc, '/api/v1/orders', 'post', '201', 'sk');
+		$fixture = \Monokulo_Api_Fixtures::order($order['order_id'], '', true);
+		$this->assertEqualsCanonicalizing(array_keys($order), array_keys($fixture), 'the order\'s fields');
+		$this->assertEqualsCanonicalizing(array_keys($order['_links']), array_keys($fixture['_links']), 'the order\'s links');
+		foreach (['self', 'mk:checkout', 'mk:onion-checkout', 'mk:order-events', 'collection'] as $rel) {
+			$this->assertSame($order['_links'][$rel]['href'], $fixture['_links'][$rel]['href'], $rel);
+		}
+		$this->assertMatchesRegularExpression('#\A/stores/[^/]+/orders/' . preg_quote($order['order_id'], '#') . '\z#', $order['_links']['mk:dashboard-order']['href']);
+
+		// Only the secret key is given the dashboard page.
+		$this->assertArrayNotHasKey('mk:dashboard-order', self::example($doc, '/api/v1/orders', 'post', '201', 'pk')['_links']);
+
+		$finish = $doc['paths']['/plugins/connect/{slug}/finish']['post']['responses'];
+		foreach (['400' => 'invalid-request', '401' => 'invalid-connect-code', '404' => 'not-found', '415' => 'unsupported-media-type', '503' => 'no-public-address'] as $status => $name) {
+			$problem = $finish[$status]['content']['application/problem+json']['examples'][$name]['value'] ?? null;
+			$this->assertIsArray($problem, "/finish's $status example");
+			$this->assertStringEndsWith('/' . $name, $problem['type'], "/finish's $status example");
+			$this->assertIsString($problem['detail'] ?? null, 'a detail to show');
+		}
+	}
+
+	/** A recorded example's body. */
+	private static function example(array $doc, string $path, string $method, string $status, string $name): array {
+		$content = $doc['paths'][$path][$method]['responses'][$status]['content'] ?? [];
+		$example = reset($content)['examples'][$name]['value'] ?? null;
+		self::assertIsArray($example, "$method $path $status, example $name");
+		return $example;
+	}
+
+	/** @return array<string, string> each form's method and target, by name */
+	private static function forms(array $resource): array {
+		$forms = [];
+		foreach ($resource['_templates'] ?? [] as $name => $form) {
+			$forms[$name] = $form['method'] . ' ' . $form['target'];
+		}
+		ksort($forms);
+		return $forms;
 	}
 
 	/** The schema of an operation's `$status` answer, references followed. */
@@ -166,8 +245,8 @@ final class MonokuloSmokeTest extends TestCase {
 		foreach ($schema['required'] ?? [] as $field) {
 			$this->assertArrayHasKey($field, $fixture, "$what: the fixture has $field");
 		}
-		$links = self::deref($doc, $properties['_links'])['properties'] ?? [];
-		foreach (array_keys($fixture['_links']) as $rel) {
+		$links = isset($properties['_links']) ? self::deref($doc, $properties['_links'])['properties'] ?? [] : [];
+		foreach (array_keys($fixture['_links'] ?? []) as $rel) {
 			$this->assertArrayHasKey($rel, $links, "$what: link $rel is described");
 		}
 		// A form is the operation named for it (`x-hal-forms-template`).

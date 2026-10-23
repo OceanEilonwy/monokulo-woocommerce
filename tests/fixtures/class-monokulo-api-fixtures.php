@@ -5,7 +5,8 @@
  * handshake's answer. Each comes as a Monokulo served at its host's root
  * or under a path (`$prefix`, `/monokulo`), with or without an onion
  * address. The smoke suite checks them against a real Monokulo's OpenAPI
- * document and its recorded examples, so they stay what Monokulo sends.
+ * document and the exchanges recorded in it, so they stay what Monokulo
+ * sends.
  *
  * @package Monokulo
  */
@@ -37,13 +38,8 @@ final class Monokulo_Api_Fixtures {
 				'mk:orders'    => array( 'href' => $prefix . '/api/v1/orders' ),
 				'mk:events'    => array( 'href' => $prefix . '/api/v1/events' ),
 				'service-desc' => array( 'href' => $prefix . '/api/v1/openapi.json' ),
-				'curies'       => array(
-					array(
-						'name'      => 'mk',
-						'href'      => 'https://docs.monokulo.com/rels/{rel}',
-						'templated' => true,
-					),
-				),
+				'service-doc'  => array( 'href' => 'https://docs.monokulo.com/api/' ),
+				'curies'       => self::curies(),
 			),
 			'_templates' => array(
 				'create-order' => array(
@@ -95,6 +91,7 @@ final class Monokulo_Api_Fixtures {
 				'mk:order-events'    => array( 'href' => $prefix . '/api/v1/orders/' . $order_id . '/events' ),
 				'mk:checkout'        => array( 'href' => $prefix . '/checkout/' . $order_id ),
 				'mk:dashboard-order' => array( 'href' => $prefix . '/stores/store-1/orders/' . $order_id ),
+				'curies'             => self::curies(),
 			),
 		);
 		if ( $onion ) {
@@ -120,6 +117,19 @@ final class Monokulo_Api_Fixtures {
 			$finish['onion_api'] = self::ONION . '/api/v1';
 		}
 		return $finish;
+	}
+
+	/**
+	 * The `mk` curie every resource carries.
+	 */
+	private static function curies(): array {
+		return array(
+			array(
+				'name'      => 'mk',
+				'href'      => 'https://docs.monokulo.com/rels/{rel}',
+				'templated' => true,
+			),
+		);
 	}
 
 	/**

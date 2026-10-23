@@ -196,19 +196,26 @@ scripts/test down
 
 Admin: `http://localhost:8092/wp-admin/`, user `admin`, password
 `admin-password-1`. The smoke test sets the shop's Monokulo address to
-`http://localhost:18092`, where `scripts/smoke` starts one.
+the one `scripts/smoke` starts on port 18092.
 
 - **wordpress**: the plugin booted inside WordPress with WooCommerce by
   WordPress's PHPUnit test library, each test in a rolled-back
   transaction. Calls to Monokulo are answered in the test
   (`pre_http_request`).
-- **smoke**: a fresh Monokulo (`docker/monokulo-smoke.toml`): sign up, add
-  a watch-only wallet, connect from the plugin's settings, then a guest
+- **smoke**: a fresh Monokulo, twice: at `http://localhost:18092`
+  (`docker/monokulo-smoke.toml`), then under a path,
+  `http://localhost:18092/monokulo`, behind nginx
+  (`docker/smoke-proxy.conf`), with an onion address
+  (`docker/monokulo-smoke-onion.toml`). Each time: sign up, add a
+  watch-only wallet, connect from the plugin's settings, then a guest
   checkout through WooCommerce's Store API lands on the Monokulo checkout,
-  and the order, read from the API, is pending. Nothing is paid. It also
-  checks the wordpress suite's API fixtures (`tests/fixtures`) against
-  that Monokulo's OpenAPI document. Run it on a shop that hasn't been
-  connected yet (`scripts/test down` and `up` start a fresh one).
+  the order, read from the API, is pending, and the shop's order links its
+  page on the dashboard; a guest on the shop's `.onion` address is sent to
+  the onion checkout, or told Tor can't be used when there's none. Nothing
+  is paid. It also checks the wordpress suite's API fixtures
+  (`tests/fixtures`) against that Monokulo's OpenAPI document. The shop
+  forgets its connection before each run. `SMOKE_ONLY=web` or `onion`
+  runs one.
 
 Webhook tests use Monokulo's published test vectors, vendored in
 `tests/vectors` and pinned to a monokulo commit (`tests/vectors/PIN`).
