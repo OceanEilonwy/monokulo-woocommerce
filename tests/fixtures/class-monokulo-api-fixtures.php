@@ -85,6 +85,7 @@ final class Monokulo_Api_Fixtures {
 			'confirmations_required'   => 10,
 			'created_at'               => 1760020320,
 			'expires_at'               => 4102444800,
+			'cancelled_at'             => null,
 			'_links'                   => array(
 				'self'               => array( 'href' => $prefix . '/api/v1/orders/' . $order_id ),
 				'collection'         => array( 'href' => $prefix . '/api/v1/orders' ),

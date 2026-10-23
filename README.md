@@ -217,10 +217,11 @@ the one `scripts/smoke` starts on port 18092.
   (`docker/monokulo-smoke-onion.toml`). Each time: sign up, add a
   watch-only wallet, connect from the plugin's settings, then a guest
   checkout through WooCommerce's Store API lands on the Monokulo checkout,
-  the order, read from the API, is pending, and the shop's order links its
-  page on the dashboard; a guest on the shop's `.onion` address is sent to
-  the onion checkout, or told Tor can't be used when there's none. Nothing
-  is paid. It also checks the wordpress suite's API fixtures
+  and the order, read from the API, is pending; a guest on the shop's
+  `.onion` address is sent to the onion checkout, or told Tor can't be
+  used when there's none. Nothing is paid, so no webhook is sent (with no
+  Monero node an order never moves, not even to expired): the vectors and
+  the wordpress suite cover deliveries. It also checks the wordpress suite's API fixtures
   (`tests/fixtures`) against that Monokulo's OpenAPI document. The shop
   forgets its connection before each run. `SMOKE_ONLY=web` or `onion`
   runs one.
