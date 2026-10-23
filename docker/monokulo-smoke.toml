@@ -8,6 +8,10 @@
 # - webhooks.allow_private_urls: the shop's webhook address is on this
 #   machine; Monokulo refuses private addresses unless told otherwise.
 # - signup: anyone can make an account (the test signs up a merchant).
+# - exchange_rate: prices from a stand-in for CoinGecko on this machine
+#   (tests/Smoke/fake-rates.php, started by scripts/smoke on 18095): USD
+#   priced, EUR rate limited, so orders don't depend on the real one and
+#   a real rates-unavailable can be met.
 # - engine.monero_node: a wallet can only be added on a network with a node.
 #   Nothing is paid in the smoke test, so the node needn't answer.
 public_uri = "http://localhost:18092"
@@ -20,6 +24,10 @@ mode = "public"
 
 [webhooks]
 allow_private_urls = true
+
+[exchange_rate]
+coingecko_base_url = "http://localhost:18095"
+coinmarketcap_enabled = false
 
 [engine.monero_node]
 mainnet = { host = "127.0.0.1", port = 18089, ssl = false }
