@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 data=$(mktemp -d)
 key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-url=http://localhost:8081
+url=http://localhost:18092
 
 if [ -n "${MONOKULO_BIN:-}" ]; then
 	MONOKULO_ENCRYPTION_KEY=$key "$MONOKULO_BIN" --options docker/monokulo-smoke.toml \

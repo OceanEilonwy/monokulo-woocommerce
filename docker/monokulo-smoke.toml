@@ -1,17 +1,19 @@
 # Monokulo for the smoke test (scripts/smoke): a fresh instance on this
 # machine's network, where the shop is http://localhost:8092/.
 #
-# - public_uri: what plugins are given as their endpoint, and where the
-#   connect flow's pages are. Without it Monokulo can't connect plugins.
+# - public_uri: Monokulo's own address, where the connect flow's pages and
+#   the API are. Without it Monokulo can't connect plugins. Port 18092,
+#   beside the shop's 8092, so other shops' smoke tests on this machine
+#   don't collide with it.
 # - webhooks.allow_private_urls: the shop's webhook address is on this
 #   machine; Monokulo refuses private addresses unless told otherwise.
 # - signup: anyone can make an account (the test signs up a merchant).
 # - engine.monero_node: a wallet can only be added on a network with a node.
 #   Nothing is paid in the smoke test, so the node needn't answer.
-public_uri = "http://localhost:8081"
+public_uri = "http://localhost:18092"
 
 [server]
-bind = "127.0.0.1:8081"
+bind = "127.0.0.1:18092"
 
 [signup]
 mode = "public"

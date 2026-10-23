@@ -17,8 +17,7 @@ class ConnectTest extends MonokuloTestCase {
 	const FINISH = array(
 		'public_key'             => 'pk_connected',
 		'secret_token'           => 'sk_connected',
-		'endpoint'               => 'https://pay.monokulo.test',
-		'onion_endpoint'         => 'http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion',
+		'api'                    => '/api/v1',
 		'webhook_signing_secret' => 'whsec_connected',
 	);
 
@@ -78,9 +77,10 @@ class ConnectTest extends MonokuloTestCase {
 		$this->assertStringContainsString( 'monokulo_connected=1', $back );
 
 		$saved = new WC_Gateway_Monokulo();
-		foreach ( array( 'endpoint', 'onion_endpoint', 'public_key', 'secret_token', 'webhook_signing_secret' ) as $key ) {
+		foreach ( array( 'public_key', 'secret_token', 'webhook_signing_secret' ) as $key ) {
 			$this->assertSame( self::FINISH[ $key ], $saved->get_option( $key ), $key );
 		}
+		$this->assertSame( self::ADDRESS . '/api/v1', $saved->get_option( 'api' ), 'The entry, resolved against the address /finish was called at.' );
 		$this->assertSame( 'yes', $saved->enabled );
 		$this->assertTrue( $saved->is_available() );
 
@@ -88,13 +88,81 @@ class ConnectTest extends MonokuloTestCase {
 		$this->assertStringContainsString( '<code>pk_connected</code>', $html );
 	}
 
-	public function test_an_onion_endpoint_that_is_not_an_http_onion_address_is_dropped() {
-		foreach ( array( 'https://abc.onion', 'http://pay.example.com', 'javascript:alert(1)' ) as $onion ) {
-			list( , $nonce ) = $this->render_connect();
-			$this->monokulo_answers( self::response( 200, array( 'onion_endpoint' => $onion ) + self::FINISH ) );
-			$this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) );
-			$this->assertSame( '', ( new WC_Gateway_Monokulo() )->get_option( 'onion_endpoint' ), $onion );
-		}
+	public function test_an_absolute_api_entry_is_kept_as_it_is() {
+		list( , $nonce ) = $this->render_connect();
+		$this->monokulo_answers( self::response( 200, array( 'api' => 'https://api.monokulo.test/api/v1' ) + self::FINISH ) );
+		$this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) );
+		$this->assertSame( 'https://api.monokulo.test/api/v1', ( new WC_Gateway_Monokulo() )->get_option( 'api' ) );
+	}
+
+	/**
+	 * A store connected before Monokulo's /api/v1 has the checkout address and its
+	 * keys, and no API entry: it keeps taking orders without connecting
+	 * again, at its Monokulo address's /api/v1, and the old addresses go.
+	 */
+	public function test_a_store_connected_before_the_api_keeps_working() {
+		update_option(
+			'woocommerce_monokulo_settings',
+			array(
+				'enabled'                => 'yes',
+				'address'                => 'https://mine.example',
+				'endpoint'               => 'https://mine.example',
+				'onion_endpoint'         => 'http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion',
+				'public_key'             => 'pk_old',
+				'secret_token'           => 'sk_old',
+				'webhook_signing_secret' => 'whsec_old',
+			)
+		);
+
+		$gateway = new WC_Gateway_Monokulo();
+		$this->assertTrue( $gateway->is_available() );
+		$this->assertSame( 'https://mine.example/api/v1', $gateway->get_option( 'api' ) );
+		$saved = get_option( 'woocommerce_monokulo_settings' );
+		$this->assertSame( 'https://mine.example/api/v1', $saved['api'] );
+		$this->assertArrayNotHasKey( 'endpoint', $saved );
+		$this->assertArrayNotHasKey( 'onion_endpoint', $saved );
+		$this->assertSame( 'sk_old', $saved['secret_token'] );
+		$this->assertSame( 'whsec_old', $saved['webhook_signing_secret'] );
+
+		$this->monokulo_answers( self::response( 201, Monokulo_Api_Fixtures::order( 'order_1' ) ) );
+		add_filter(
+			'pre_http_request',
+			fn( $preempt, $args, $url ) => 'GET' === $args['method'] ? self::response( 200, Monokulo_Api_Fixtures::entry() ) : $preempt,
+			20,
+			3
+		);
+		$result = ( new WC_Gateway_Monokulo() )->process_payment( self::order()->get_id() );
+		$this->assertSame( array( 'https://mine.example/api/v1', 'https://mine.example/api/v1/orders' ), wp_list_pluck( $this->sent, 'url' ) );
+		$this->assertSame( 'Bearer sk_old', $this->sent[1]['args']['headers']['Authorization'] );
+		$this->assertSame( 'https://mine.example/checkout/order_1', $result['redirect'] );
+	}
+
+	public function test_a_store_connected_before_the_address_setting_uses_its_checkout_address() {
+		update_option(
+			'woocommerce_monokulo_settings',
+			array(
+				'enabled'      => 'yes',
+				'endpoint'     => 'https://pay.mine.example/',
+				'public_key'   => 'pk_old',
+				'secret_token' => 'sk_old',
+			)
+		);
+		$this->assertSame( 'https://pay.mine.example/api/v1', ( new WC_Gateway_Monokulo() )->get_option( 'api' ) );
+	}
+
+	public function test_an_unconnected_store_gets_no_api_entry_from_the_upgrade() {
+		update_option(
+			'woocommerce_monokulo_settings',
+			array(
+				'endpoint'       => '',
+				'onion_endpoint' => '',
+				'secret_token'   => '',
+			)
+		);
+		$gateway = new WC_Gateway_Monokulo();
+		$this->assertSame( '', $gateway->get_option( 'api' ) );
+		$this->assertFalse( $gateway->is_available() );
+		$this->assertArrayNotHasKey( 'endpoint', get_option( 'woocommerce_monokulo_settings' ) );
 	}
 
 	public function test_a_failed_finish_keeps_the_store_as_it_was() {
@@ -107,7 +175,7 @@ class ConnectTest extends MonokuloTestCase {
 		);
 		self::gateway(
 			array(
-				'endpoint'   => 'https://old.example',
+				'api'        => 'https://old.example/api/v1',
 				'public_key' => 'pk_old',
 				'enabled'    => 'no',
 			)
@@ -119,7 +187,7 @@ class ConnectTest extends MonokuloTestCase {
 			$this->assertStringContainsString( 'monokulo_connect_error=' . $error, $this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) ), $case );
 			$after = new WC_Gateway_Monokulo();
 			$this->assertSame( 'pk_old', $after->get_option( 'public_key' ), $case );
-			$this->assertSame( 'https://old.example', $after->get_option( 'endpoint' ), $case );
+			$this->assertSame( 'https://old.example/api/v1', $after->get_option( 'api' ), $case );
 			$this->assertSame( 'no', $after->enabled, $case );
 		}
 	}

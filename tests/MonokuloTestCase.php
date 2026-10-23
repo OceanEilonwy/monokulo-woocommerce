@@ -16,6 +16,11 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 	const WEBHOOK_SECRET = 'whsec_test';
 
 	/**
+	 * The API entry a connected gateway has.
+	 */
+	const API = 'https://pay.example.com/api/v1';
+
+	/**
 	 * Requests the plugin sent, oldest first.
 	 *
 	 * @var array<int, array{url: string, args: array}>
@@ -80,6 +85,44 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Answers like a connected Monokulo: the entry and order creation, from
+	 * the fixtures, unless `$routes` (`"METHOD url" => answer`) says
+	 * otherwise. Anything else is a 404 problem. Each request is recorded
+	 * in `$sent`.
+	 *
+	 * @param array<string, array|WP_Error> $routes Answers by method and URL.
+	 */
+	protected function monokulo_serves( array $routes = array() ): void {
+		$routes += array(
+			'GET ' . self::API                          => self::response( 200, Monokulo_Api_Fixtures::entry() ),
+			'POST https://pay.example.com/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_1' ) ),
+		);
+		remove_all_filters( 'pre_http_request' );
+		add_filter(
+			'pre_http_request',
+			function ( $preempt, $args, $url ) use ( $routes ) {
+				$this->sent[] = array(
+					'url'  => $url,
+					'args' => $args,
+				);
+				return $routes[ ( $args['method'] ?? 'GET' ) . ' ' . $url ]
+					?? self::response( 404, Monokulo_Api_Fixtures::problem( 404, 'not-found', 'Not found', $url ) );
+			},
+			10,
+			3
+		);
+	}
+
+	/**
+	 * The requests sent to `$url`.
+	 *
+	 * @param string $url The URL.
+	 */
+	protected function sent_to( string $url ): array {
+		return array_values( array_filter( $this->sent, static fn( array $sent ) => $sent['url'] === $url ) );
+	}
+
+	/**
 	 * An HTTP response with a JSON (or raw) body.
 	 *
 	 * @param int          $code Status.
@@ -119,7 +162,7 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 		return self::gateway(
 			$settings + array(
 				'enabled'                => 'yes',
-				'endpoint'               => 'https://pay.example.com',
+				'api'                    => self::API,
 				'public_key'             => 'pk_test',
 				'secret_token'           => 'sk_test',
 				'webhook_signing_secret' => self::WEBHOOK_SECRET,

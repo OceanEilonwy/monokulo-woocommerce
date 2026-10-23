@@ -1,8 +1,8 @@
 <?php
 /**
- * Paying with Monero: `process_payment()` creates the order at
- * `POST {endpoint}/pay/{pk}/orders` and sends the customer to Monokulo's
- * checkout for it.
+ * Paying with Monero: `process_payment()` reads the API entry with the
+ * store's secret key, makes the order with its `create-order` form, and
+ * sends the customer to the order's `mk:checkout` link.
  *
  * @package Monokulo
  */
@@ -11,33 +11,29 @@ declare(strict_types=1);
 
 class CheckoutTest extends MonokuloTestCase {
 
-	const ONION = 'http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion';
+	const ORDERS = 'https://pay.example.com/api/v1/orders';
 
-	private static function created( string $order_id = 'mko_1' ): array {
-		return self::response(
-			200,
-			array(
-				'order_id'   => $order_id,
-				'amount'     => '42.50',
-				'currency'   => 'USD',
-				'expires_at' => 4102444800,
-			)
-		);
+	private static function created( string $order_id = 'order_1' ): array {
+		return self::response( 201, Monokulo_Api_Fixtures::order( $order_id ) );
 	}
 
 	public function test_placing_an_order_creates_it_on_monokulo_and_sends_the_customer_to_pay() {
 		$order = self::order();
-		$this->monokulo_answers( self::created( 'mko_deadbeef' ) );
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::created( 'order_deadbeef' ) ) );
 
-		$result = self::connected_gateway( array( 'endpoint' => 'https://pay.example.com/' ) )->process_payment( $order->get_id() );
+		$result = self::connected_gateway()->process_payment( $order->get_id() );
 
-		$this->assertCount( 1, $this->sent );
-		$sent = $this->sent[0];
-		$this->assertSame( 'https://pay.example.com/pay/pk_test/orders', $sent['url'] );
+		$this->assertSame( array( self::API, self::ORDERS ), wp_list_pluck( $this->sent, 'url' ), 'The entry, then its create-order form.' );
+		foreach ( $this->sent as $sent ) {
+			$this->assertSame( 'Bearer sk_test', $sent['args']['headers']['Authorization'] );
+			$this->assertSame( 'woocommerce/' . WC_Gateway_Monokulo::VERSION, $sent['args']['headers']['Monokulo-Client'] );
+			$this->assertStringContainsString( 'application/prs.hal-forms+json', $sent['args']['headers']['Accept'] );
+			$this->assertMatchesRegularExpression( '/\A00-' . WC_Gateway_Monokulo::trace_id() . '-[0-9a-f]{16}-01\z/', $sent['args']['headers']['traceparent'] );
+		}
+		$this->assertSame( 'GET', $this->sent[0]['args']['method'] );
+		$sent = $this->sent[1];
 		$this->assertSame( 'POST', $sent['args']['method'] );
-		$this->assertSame( 'Bearer sk_test', $sent['args']['headers']['Authorization'] );
-		$this->assertSame( 'woocommerce/' . WC_Gateway_Monokulo::VERSION, $sent['args']['headers']['Monokulo-Client'] );
-		$this->assertMatchesRegularExpression( '/\A00-' . WC_Gateway_Monokulo::trace_id() . '-[0-9a-f]{16}-01\z/', $sent['args']['headers']['traceparent'] );
+		$this->assertSame( 'application/json', $sent['args']['headers']['Content-Type'] );
 		$this->assertSame(
 			array(
 				'amount'                 => '42.50',
@@ -53,14 +49,49 @@ class CheckoutTest extends MonokuloTestCase {
 		$this->assertSame(
 			array(
 				'result'   => 'success',
-				'redirect' => 'https://pay.example.com/pay/pk_test/orders/mko_deadbeef',
+				'redirect' => 'https://pay.example.com/checkout/order_deadbeef',
 			),
 			$result
 		);
 		$order = wc_get_order( $order->get_id() );
-		$this->assertSame( 'mko_deadbeef', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+		$this->assertSame( 'order_deadbeef', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
 		$this->assertSame( 'pending', $order->get_status(), 'Not paid until Monokulo says so.' );
-		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/pay/pk_test/orders/mko_deadbeef', self::notes( $order ) );
+		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/checkout/order_deadbeef', self::notes( $order ) );
+	}
+
+	public function test_the_entry_is_read_once_and_kept() {
+		$this->monokulo_serves();
+		$gateway = self::connected_gateway();
+		$gateway->process_payment( self::order()->get_id() );
+		$gateway->process_payment( self::order()->get_id() );
+		( new WC_Gateway_Monokulo() )->process_payment( self::order()->get_id() );
+
+		$this->assertCount( 1, $this->sent_to( self::API ) );
+		$this->assertCount( 3, $this->sent_to( self::ORDERS ) );
+	}
+
+	/**
+	 * Monokulo's links are followed where they point, resolved against the
+	 * URL they were read at: nothing past the entry is built by the plugin.
+	 */
+	public function test_links_and_forms_are_followed_where_they_point() {
+		$entry = Monokulo_Api_Fixtures::entry();
+		$entry['_templates']['create-order']['target'] = 'https://elsewhere.example:8443/v1/make';
+		$made  = Monokulo_Api_Fixtures::order( 'order_far' );
+		$made['_links']['mk:checkout']['href'] = '/pay-here/order_far';
+		$this->monokulo_serves(
+			array(
+				'GET ' . self::API                                => self::response( 200, $entry ),
+				'POST https://elsewhere.example:8443/v1/make' => self::response( 201, $made ),
+			)
+		);
+
+		$result = self::connected_gateway()->process_payment( self::order()->get_id() );
+
+		$this->assertSame( 'https://elsewhere.example:8443/pay-here/order_far', $result['redirect'] );
+		$this->assertSame( 'https://pay.example.com/checkout/x', WC_Gateway_Monokulo::resolve( '/checkout/x', self::API ) );
+		$this->assertSame( 'https://pay.example.com/api/v1/x', WC_Gateway_Monokulo::resolve( 'x', self::API . '/' ) );
+		$this->assertSame( 'http://abc.onion/api/v1', WC_Gateway_Monokulo::resolve( '/api/v1', 'http://abc.onion/plugins/connect/woocommerce/finish' ) );
 	}
 
 	/**
@@ -70,42 +101,20 @@ class CheckoutTest extends MonokuloTestCase {
 	public function test_a_changed_total_makes_a_new_monokulo_order_and_keeps_the_old_one() {
 		$order   = self::order();
 		$gateway = self::connected_gateway();
-		$this->monokulo_answers( self::created( 'mko_first' ) );
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::created( 'order_first' ) ) );
 		$gateway->process_payment( $order->get_id() );
 		$gateway->process_payment( $order->get_id() );
 
 		$order = wc_get_order( $order->get_id() );
 		$order->set_total( '50.00' );
 		$order->save();
-		$this->monokulo_answers( self::created( 'mko_second' ) );
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::created( 'order_second' ) ) );
 		$gateway->process_payment( $order->get_id() );
 
 		$this->assertStringEndsWith( ':50.00:USD', json_decode( end( $this->sent )['args']['body'], true )['idempotency_key'] );
 		$order = wc_get_order( $order->get_id() );
-		$this->assertSame( 'mko_second', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
-		$this->assertSame( array( 'mko_first', 'mko_second' ), array_values( wp_list_pluck( $order->get_meta( WC_Gateway_Monokulo::META_ORDER_IDS, false ), 'value' ) ) );
-	}
-
-	public function test_a_customer_on_the_shops_onion_address_pays_on_monokulos() {
-		$gateway = self::connected_gateway( array( 'onion_endpoint' => self::ONION ) );
-		$host    = $_SERVER['HTTP_HOST'] ?? null;
-		try {
-			$_SERVER['HTTP_HOST'] = 'shopabcd.onion';
-			$this->monokulo_answers( self::created() );
-			$result = $gateway->process_payment( self::order()->get_id() );
-			$this->assertSame( 'https://pay.example.com/pay/pk_test/orders', $this->sent[0]['url'], 'Created from the shop\'s server.' );
-			$this->assertSame( self::ONION . '/pay/pk_test/orders/mko_1', $result['redirect'] );
-
-			$_SERVER['HTTP_HOST'] = 'shop.example.com';
-			$result               = $gateway->process_payment( self::order()->get_id() );
-			$this->assertSame( 'https://pay.example.com/pay/pk_test/orders/mko_1', $result['redirect'] );
-		} finally {
-			if ( null === $host ) {
-				unset( $_SERVER['HTTP_HOST'] );
-			} else {
-				$_SERVER['HTTP_HOST'] = $host;
-			}
-		}
+		$this->assertSame( 'order_second', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+		$this->assertSame( array( 'order_first', 'order_second' ), array_values( wp_list_pluck( $order->get_meta( WC_Gateway_Monokulo::META_ORDER_IDS, false ), 'value' ) ) );
 	}
 
 	public function test_the_description_names_the_order_and_its_first_item() {
@@ -127,33 +136,51 @@ class CheckoutTest extends MonokuloTestCase {
 	}
 
 	public function test_a_store_without_a_whole_connection_calls_nothing() {
-		$this->monokulo_answers( self::created() );
-		$this->expectException( Exception::class );
-		try {
-			self::connected_gateway( array( 'secret_token' => '' ) )->process_payment( self::order()->get_id() );
-		} finally {
-			$this->assertSame( array(), $this->sent );
+		$this->monokulo_serves();
+		foreach ( array( 'secret_token', 'api' ) as $missing ) {
+			try {
+				self::connected_gateway( array( $missing => '' ) )->process_payment( self::order()->get_id() );
+				$this->fail( "Without $missing it should have thrown." );
+			} catch ( Exception $e ) {
+				$this->assertStringContainsString( 'not set up for this store', $e->getMessage() );
+			}
+			$this->assertSame( array(), $this->sent, $missing );
 		}
 	}
 
 	/**
 	 * Each failure tells the customer something short, logs the detail for
-	 * the merchant, and leaves the order unlinked.
+	 * the merchant (a problem's title, detail and type), and leaves the
+	 * order unlinked.
 	 */
 	public function test_a_refused_or_failed_order_is_explained_and_logged() {
+		$entry  = 'GET ' . self::API;
+		$create = 'POST ' . self::ORDERS;
+		$bare   = Monokulo_Api_Fixtures::entry();
+		unset( $bare['_templates']['create-order'] );
+		$made = Monokulo_Api_Fixtures::order( 'order_1' );
+		unset( $made['_links']['mk:checkout'] );
+		$problem = static fn( int $status, string $name, string $title, string $detail ) => self::response( $status, Monokulo_Api_Fixtures::problem( $status, $name, $title, $detail ) );
+
 		$cases = array(
-			'unreachable' => array( new WP_Error( 'http_request_failed', 'cURL error 7' ), 'could not be reached', 'cURL error 7' ),
-			'HTTP 401'    => array( self::response( 401, array( 'error' => 'detail 401' ) ), 'not available for this store', 'reconnect the plugin' ),
-			'HTTP 403'    => array( self::response( 403, array( 'error' => 'detail 403' ) ), 'not available for this store', 'verified-domain' ),
-			'HTTP 404'    => array( self::response( 404, array( 'error' => 'detail 404' ) ), 'could not be started', 'reconnect the plugin' ),
-			'HTTP 429'    => array( self::response( 429, array( 'error' => 'detail 429' ) ), 'busy right now', 'rate limited' ),
-			'HTTP 400'    => array( self::response( 400, array( 'error' => 'unsupported currency' ) ), 'could not be started', 'unsupported currency' ),
-			'not json'    => array( self::response( 200, '<html>Checking your browser</html>' ), 'could not be started', 'Checking your browser' ),
+			'unreachable'       => array( array( $entry => new WP_Error( 'http_request_failed', 'cURL error 7' ) ), 'could not be reached', 'cURL error 7' ),
+			'entry 401'         => array( array( $entry => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'reconnect the plugin' ),
+			'entry 404'         => array( array( $entry => self::response( 404, 'Not Found' ) ), 'could not be started', 'check the Monokulo address' ),
+			'no form'           => array( array( $entry => self::response( 200, $bare ) ), 'not available for this store', 'no "create-order" form' ),
+			'create unreachable' => array( array( $create => new WP_Error( 'http_request_failed', 'cURL error 28' ) ), 'could not be reached', 'cURL error 28' ),
+			'HTTP 401'          => array( array( $create => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'No valid key: detail 401 (https://docs.monokulo.com/problems/unauthorized)' ),
+			'HTTP 403'          => array( array( $create => $problem( 403, 'forbidden', 'Not allowed with this key', 'detail 403' ) ), 'not available for this store', 'Not allowed with this key' ),
+			'HTTP 429'          => array( array( $create => $problem( 429, 'rate-limited', 'Too many requests', 'detail 429' ) ), 'busy right now', 'rate limited' ),
+			'invalid amount'    => array( array( $create => $problem( 400, 'invalid-amount', 'The order can\'t be priced', 'unsupported currency: USD' ) ), 'cannot be priced', 'unsupported currency: USD' ),
+			'conflict'          => array( array( $create => $problem( 409, 'idempotency-conflict', 'Key used for another order', 'detail 409' ) ), 'could not be started', 'Key used for another order' ),
+			'not json'          => array( array( $create => self::response( 201, '<html>Checking your browser</html>' ) ), 'could not be started', 'Checking your browser' ),
+			'no checkout link'  => array( array( $create => self::response( 201, $made ) ), 'could not be started', 'not the expected shape' ),
 		);
-		foreach ( $cases as $case => list( $answer, $customer, $merchant ) ) {
+		foreach ( $cases as $case => list( $routes, $customer, $merchant ) ) {
 			$this->logged = array();
 			$order        = self::order();
-			$this->monokulo_answers( $answer );
+			delete_transient( 'monokulo_entry_' . md5( self::API . "\nsk_test" ) );
+			$this->monokulo_serves( $routes );
 			try {
 				self::connected_gateway()->process_payment( $order->get_id() );
 				$this->fail( "$case should have thrown." );
@@ -161,8 +188,21 @@ class CheckoutTest extends MonokuloTestCase {
 				$this->assertStringContainsString( $customer, $e->getMessage(), $case );
 				$this->assertStringNotContainsString( 'detail', $e->getMessage(), $case );
 			}
-			$this->assertTrue( $this->logged( $merchant ), $case );
+			$this->assertTrue( $this->logged( $merchant ), $case . ': ' . wp_json_encode( $this->logged ) );
 			$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ), $case );
 		}
+	}
+
+	public function test_a_refused_key_has_the_entry_read_again() {
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 401, Monokulo_Api_Fixtures::problem( 401, 'unauthorized', 'No valid key', '' ) ) ) );
+		$gateway = self::connected_gateway();
+		foreach ( array( 1, 2 ) as $attempt ) {
+			try {
+				$gateway->process_payment( self::order()->get_id() );
+			} catch ( Exception $e ) {
+				unset( $e );
+			}
+		}
+		$this->assertCount( 2, $this->sent_to( self::API ) );
 	}
 }

@@ -43,7 +43,7 @@ class LoggingTest extends MonokuloTestCase {
 
 	public function test_warnings_go_to_monokulo_only_when_the_merchant_turned_that_on() {
 		$this->monokulo_answers( self::response( 204 ) );
-		$logs = 'https://pay.example.com/pay/pk_test/logs';
+		$logs = 'https://pay.example.com/api/v1/logs';
 
 		self::connected_gateway()->process_webhook( '{}', 'bad' );
 		WC_Gateway_Monokulo::flush_forwarded( $logs, 'sk_test' );
@@ -64,5 +64,15 @@ class LoggingTest extends MonokuloTestCase {
 
 		WC_Gateway_Monokulo::flush_forwarded( $logs, 'sk_test' );
 		$this->assertCount( 1, $this->sent, 'Sent once.' );
+	}
+
+	public function test_warnings_go_to_the_apis_logs() {
+		$logs_url = new ReflectionMethod( WC_Gateway_Monokulo::class, 'logs_url' );
+		$this->assertSame( 'https://pay.example.com/api/v1/logs', $logs_url->invoke( self::connected_gateway() ), 'Without a link, beside the entry.' );
+
+		$entry                      = Monokulo_Api_Fixtures::entry();
+		$entry['_links']['mk:logs'] = array( 'href' => '/reports' );
+		set_transient( 'monokulo_entry_' . md5( self::API . "\nsk_test" ), $entry );
+		$this->assertSame( 'https://pay.example.com/reports', $logs_url->invoke( self::connected_gateway() ), 'Where the entry links them.' );
 	}
 }
