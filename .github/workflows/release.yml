@@ -38,7 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<EOF
-          Monokulo payment gateway for WooCommerce (WordPress 6.4 or newer, WooCommerce 8.0 or newer, PHP 8.1 or newer).
+          Monokulo payment gateway for WooCommerce (WordPress 6.5 or newer, WooCommerce 8.2 or newer, PHP 8.1 or newer).
 
           Install: in WordPress, Plugins > Add New > Upload Plugin, upload \`monokulo.zip\` and activate it, then connect it under WooCommerce > Settings > Payments > Monokulo. See the README.
 

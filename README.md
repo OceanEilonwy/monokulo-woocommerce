@@ -7,9 +7,11 @@ store in your Monokulo, creates an order there when a customer checks out,
 and marks the WooCommerce order paid when Monokulo says it is. Monokulo only
 ever holds a view key; no spend key touches the shop or Monokulo.
 
-- WordPress **6.4** or newer, WooCommerce **8.0** or newer, PHP **8.1** or
+- WordPress **6.5** or newer, WooCommerce **8.2** or newer, PHP **8.1** or
   newer (tested on WordPress 7.1.3 and WooCommerce 11.2.1, PHP 8.1, 8.4 and
   8.5)
+- Works with the Cart and Checkout blocks and the classic checkout, and
+  with WooCommerce's order tables (HPOS)
 - A Monokulo whose operator has set its public address
 - GPL-2.0-or-later
 
@@ -81,8 +83,8 @@ doesn't show it.
 ## Webhooks and order statuses
 
 Connecting registers the shop's webhook address with Monokulo
-(`https://<your shop>/wc-api/monokulo/`, or `/?wc-api=monokulo` without
-pretty permalinks). Each delivery is signed (`X-Monokulo-Signature`); the
+(`https://<your shop>/wp-json/monokulo/v1/webhook`, or
+`/?rest_route=/monokulo/v1/webhook` without pretty permalinks). Each delivery is signed (`X-Monokulo-Signature`); the
 plugin refuses a missing or wrong signature and one more than five minutes
 old, and a delivery seen before changes nothing.
 
@@ -104,6 +106,12 @@ The plugin logs through WooCommerce (**WooCommerce > Status > Logs**,
 source `monokulo`), each line with the request's trace id, which matches
 Monokulo's own logs. **Send errors to Monokulo** also sends its warnings and
 errors to your Monokulo, when the store there accepts client logs.
+
+## Removing the plugin
+
+Deleting the plugin in WordPress removes its settings. Orders keep their
+Monokulo order ids and notes. Disconnect the shop in Monokulo too (see
+above), so it stops sending webhooks.
 
 ## Test first
 
@@ -149,7 +157,7 @@ in the monokulo repository.
 ## Release
 
 Bump `VERSION`, the `Version` in `monokulo.php`'s header and
-`WC_Gateway_Monokulo::CLIENT` together (a test checks), then push a tag
+`WC_Gateway_Monokulo::VERSION` together (a test checks), then push a tag
 `v<version>`. The release workflow installs the zip in the test shop, runs
 the tests and publishes `monokulo.zip` and its `.sha256`.
 `scripts/build-zip` builds the same zip locally (byte for byte).

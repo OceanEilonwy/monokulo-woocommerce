@@ -1,11 +1,12 @@
 <?php
 /**
- * The version is written in three places that must agree: VERSION (the
- * release tag), the plugin header WordPress reads, and the
- * `Monokulo-Client` header the plugin names itself with.
+ * The version and requirements, written in several places, agree.
  *
  * @package Monokulo
  */
+
+declare(strict_types=1);
+
 class PackageTest extends WP_UnitTestCase {
 
 	public function test_the_version_is_the_same_everywhere() {
@@ -15,6 +16,27 @@ class PackageTest extends WP_UnitTestCase {
 
 		$header = get_file_data( $root . '/monokulo.php', array( 'Version' => 'Version' ) );
 		$this->assertSame( $version, $header['Version'], 'monokulo.php header' );
-		$this->assertSame( 'woocommerce/' . $version, WC_Gateway_Monokulo::CLIENT, 'WC_Gateway_Monokulo::CLIENT' );
+		$this->assertSame( $version, WC_Gateway_Monokulo::VERSION );
+		$this->assertSame( 'woocommerce/' . $version, WC_Gateway_Monokulo::CLIENT );
+	}
+
+	public function test_the_requirements_are_the_same_everywhere() {
+		$root   = dirname( __DIR__ );
+		$header = get_file_data(
+			$root . '/monokulo.php',
+			array(
+				'php' => 'Requires PHP',
+				'wp'  => 'Requires at least',
+				'wc'  => 'WC requires at least',
+			)
+		);
+		$composer = json_decode( (string) file_get_contents( $root . '/composer.json' ), true );
+		$this->assertSame( '>=' . $header['php'], $composer['require']['php'] );
+		$this->assertSame( $header['php'] . '.0', $composer['config']['platform']['php'] );
+
+		$readme = (string) file_get_contents( $root . '/README.md' );
+		$this->assertStringContainsString( 'WordPress **' . $header['wp'] . '** or newer', $readme );
+		$this->assertStringContainsString( 'WooCommerce **' . $header['wc'] . '** or newer', $readme );
+		$this->assertStringContainsString( 'PHP **' . $header['php'] . '** or', $readme );
 	}
 }
