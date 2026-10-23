@@ -92,15 +92,89 @@ class WebhookTest extends MonokuloTestCase {
 
 	public function test_notes_say_what_the_merchant_must_handle() {
 		$cases = array(
-			'order.overpaid' => 'more Monero than the amount due',
-			'order.partial'  => 'partial payment',
-			'order.expired'  => 'no automatic refund',
+			'order.confirming' => 'waiting for confirmations',
+			'order.partial'    => 'part of the amount due has arrived',
+			'order.paid'       => 'paid in full',
+			'order.overpaid'   => 'The excess is not refunded automatically',
+			'order.expired'    => 'Any funds received stay at the payment address',
 		);
 		foreach ( $cases as $event => $note ) {
 			$order = self::order_paying( 'mko_' . $event );
 			$this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_' . $event ) ) );
 			$this->assertStringContainsString( $note, self::notes( wc_get_order( $order->get_id() ) ), $event );
 		}
+	}
+
+	public function test_a_paid_order_records_the_monokulo_order_and_links_to_it() {
+		$order = self::order_paying( 'mko_linked' );
+		$this->deliver(
+			self::event(
+				array(
+					'event'    => 'order.paid',
+					'order_id' => 'mko_linked',
+					'store'    => array( 'id' => 'store-1', 'name' => 'Bakery' ),
+				)
+			)
+		);
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( 'mko_linked', $order->get_transaction_id() );
+		$this->assertStringContainsString( 'In Monokulo: https://pay.example.com/dashboard/stores/store-1/orders/mko_linked', self::notes( $order ) );
+	}
+
+	/**
+	 * Monokulo's advice: never undo a payment on your own. A later event
+	 * leaves a paid order paid and says so.
+	 */
+	public function test_a_paid_order_stays_paid() {
+		foreach ( array( 'order.expired', 'order.partial', 'order.pending', 'order.confirming' ) as $event ) {
+			$order = self::order_paying( 'mko_kept_' . $event, 'processing' );
+			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_kept_' . $event ) ) ), $event );
+			$order = wc_get_order( $order->get_id() );
+			$this->assertSame( 'processing', $order->get_status(), $event );
+			$this->assertStringContainsString( 'already paid, so its status is left as it is', self::notes( $order ), $event );
+		}
+	}
+
+	/**
+	 * After the total changed, the customer was sent to pay a new Monokulo
+	 * order. Events about the old one tell the merchant and leave the order.
+	 */
+	public function test_an_older_payment_request_never_moves_the_order() {
+		$order = self::order_paying( 'mko_old' );
+		$order->update_meta_data( WC_Gateway_Monokulo::META_ORDER_ID, 'mko_new' );
+		$order->add_meta_data( WC_Gateway_Monokulo::META_ORDER_IDS, 'mko_new' );
+		$order->save();
+
+		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.expired', 'order_id' => 'mko_old' ) ) ) );
+		$this->assertSame( 'pending', wc_get_order( $order->get_id() )->get_status() );
+		$this->assertStringContainsString( 'older payment request', self::notes( wc_get_order( $order->get_id() ) ) );
+
+		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_old' ) ) ) );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertFalse( $order->is_paid() );
+		$this->assertStringContainsString( 'Check the amount received', self::notes( $order ) );
+
+		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_new' ) ) ) );
+		$this->assertTrue( wc_get_order( $order->get_id() )->is_paid() );
+	}
+
+	/**
+	 * When applying an event fails, Monokulo is told to send it again, and
+	 * the retry applies it.
+	 */
+	public function test_an_event_that_fails_to_apply_is_retried() {
+		$order = self::order_paying( 'mko_retry' );
+		$body  = self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_retry' ) );
+		$fail  = static function () {
+			throw new RuntimeException( 'database went away' );
+		};
+		add_action( 'woocommerce_pre_payment_complete', $fail );
+		$this->assertSame( 500, $this->deliver( $body ) );
+		$this->assertTrue( $this->logged( 'could not be applied' ) );
+		remove_action( 'woocommerce_pre_payment_complete', $fail );
+
+		$this->assertSame( 200, $this->deliver( $body ) );
+		$this->assertTrue( wc_get_order( $order->get_id() )->is_paid() );
 	}
 
 	public function test_double_spend_events_add_a_note_and_leave_the_status() {
@@ -117,7 +191,7 @@ class WebhookTest extends MonokuloTestCase {
 		$order = self::order_paying( 'mko_future' );
 		foreach ( array( 'order.refunded', 'payment.relabelled' ) as $event ) {
 			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_future' ) ) ), $event );
-			$this->assertTrue( $this->logged( '"' . $event . '"' ), $event );
+			$this->assertTrue( $this->logged( 'unknown event "' . $event . '"' ), $event );
 		}
 		$this->assertSame( 'pending', wc_get_order( $order->get_id() )->get_status() );
 	}

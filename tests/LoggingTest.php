@@ -59,7 +59,7 @@ class LoggingTest extends MonokuloTestCase {
 		$this->assertFalse( $sent['args']['blocking'], 'No page waits for it.' );
 		$entry = json_decode( $sent['args']['body'], true )['entries'][0];
 		$this->assertSame( 'warning', $entry['level'] );
-		$this->assertStringContainsString( 'Webhook rejected', $entry['message'] );
+		$this->assertStringContainsString( 'Webhook refused', $entry['message'] );
 		$this->assertSame( WC_Gateway_Monokulo::trace_id(), $entry['trace_id'] );
 
 		WC_Gateway_Monokulo::flush_forwarded( $logs, 'sk_test' );

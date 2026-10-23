@@ -28,7 +28,7 @@ ever holds a view key; no spend key touches the shop or Monokulo.
    starts at the public Monokulo, `https://monokulo.com`. If your store is
    on another Monokulo (your own, say), type its address and **Save
    changes**.
-2. **Connect your Monero wallet**.
+2. **Connect**.
 3. Sign in to Monokulo (or sign up) in the page that opens. It finds your
    store by the shop's address:
    - one of your stores has the shop's site: confirm, and you're done;
@@ -84,18 +84,28 @@ doesn't show it.
 
 Connecting registers the shop's webhook address with Monokulo
 (`https://<your shop>/wp-json/monokulo/v1/webhook`, or
-`/?rest_route=/monokulo/v1/webhook` without pretty permalinks). Each delivery is signed (`X-Monokulo-Signature`); the
-plugin refuses a missing or wrong signature and one more than five minutes
-old, and a delivery seen before changes nothing.
+`/?rest_route=/monokulo/v1/webhook` without pretty permalinks). Each
+delivery is signed (`X-Monokulo-Signature`); the plugin refuses a missing
+or wrong signature and one more than five minutes old, and a delivery seen
+before changes nothing.
 
 | Monokulo event | WooCommerce order |
 | --- | --- |
 | `order.unconfirmed`, `order.confirming`, `order.partial` | On hold |
-| `order.paid` | Paid (`payment_complete()`: Processing, or Completed for virtual and downloadable orders) |
+| `order.paid` | Paid (`payment_complete()`: Processing, or Completed for virtual and downloadable orders), with the Monokulo order as its transaction ID |
 | `order.overpaid` | Paid, and a note that the excess isn't refunded automatically |
 | `order.expired` | Cancelled, and a note: any funds received stay at the address |
+| `order.pending` | Pending: a double-spend voided every payment |
 | `order.double_spend_detected` | A fraud alert note; any status change comes as its own event |
 | `order.double_spend_reversed` | A note |
+
+Every event adds a note to the order, with a link to the order in your
+Monokulo. Two things never move the order, and the note says why:
+
+- an event for an order that is already paid: Monokulo's advice is never to
+  undo a payment on your own;
+- an event for an older payment request, from before the order's total
+  changed (the customer was then sent to pay a new one).
 
 Monokulo is non-custodial: refund an overpayment or an expired order's
 funds from your wallet yourself.

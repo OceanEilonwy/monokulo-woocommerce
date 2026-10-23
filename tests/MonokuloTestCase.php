@@ -155,6 +155,7 @@ abstract class MonokuloTestCase extends WP_UnitTestCase {
 		$order = self::order();
 		$order->set_status( $status );
 		$order->update_meta_data( WC_Gateway_Monokulo::META_ORDER_ID, $monokulo_order_id );
+		$order->add_meta_data( WC_Gateway_Monokulo::META_ORDER_IDS, $monokulo_order_id );
 		$order->save();
 		return $order;
 	}

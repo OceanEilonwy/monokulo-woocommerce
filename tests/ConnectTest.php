@@ -99,8 +99,9 @@ class ConnectTest extends MonokuloTestCase {
 
 	public function test_a_failed_finish_keeps_the_store_as_it_was() {
 		$answers = array(
-			'refused'     => self::response( 401 ),
+			'finish'      => self::response( 401 ),
 			'unreachable' => new WP_Error( 'http_request_failed', 'cURL error 28' ),
+			'unavailable' => self::response( 503, array( 'error' => 'no public address yet' ) ),
 			'garbled'     => self::response( 200, '<html>502 Bad Gateway</html>' ),
 			'incomplete'  => self::response( 200, array( 'public_key' => 'pk_x' ) ),
 		);
@@ -114,19 +115,13 @@ class ConnectTest extends MonokuloTestCase {
 		foreach ( $answers as $case => $answer ) {
 			list( , $nonce ) = $this->render_connect();
 			$this->monokulo_answers( $answer );
-			$this->assertStringContainsString( 'monokulo_connect_error=finish', $this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) ), $case );
+			$error = in_array( $case, array( 'unreachable', 'unavailable' ), true ) ? $case : 'finish';
+			$this->assertStringContainsString( 'monokulo_connect_error=' . $error, $this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) ), $case );
 			$after = new WC_Gateway_Monokulo();
 			$this->assertSame( 'pk_old', $after->get_option( 'public_key' ), $case );
 			$this->assertSame( 'https://old.example', $after->get_option( 'endpoint' ), $case );
 			$this->assertSame( 'no', $after->enabled, $case );
 		}
-	}
-
-	public function test_a_monokulo_not_ready_for_plugins_says_so() {
-		list( , $nonce ) = $this->render_connect();
-		$this->monokulo_answers( self::response( 503, array( 'error' => 'no public address yet' ) ) );
-		$this->assertStringContainsString( 'monokulo_connect_error=unavailable', $this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) ) );
-		$this->assertSame( '', ( new WC_Gateway_Monokulo() )->get_option( 'public_key' ) );
 	}
 
 	public function test_a_wrong_missing_or_reused_nonce_is_refused_before_finish() {
@@ -146,6 +141,21 @@ class ConnectTest extends MonokuloTestCase {
 		list( , $nonce ) = $this->render_connect();
 		$this->assertStringContainsString( 'monokulo_connected=1', $this->connect_return( array( 'token' => 't', 'nonce' => $nonce ) ) );
 		$this->assertStringContainsString( 'monokulo_connect_error=nonce', $this->connect_return( array( 'token' => 't2', 'nonce' => $nonce ) ), 'used once' );
+		$this->assertCount( 1, $this->sent );
+	}
+
+	public function test_connect_links_open_in_two_tabs_both_work_for_the_admin_who_opened_them() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+		list( , $first )  = $this->render_connect();
+		list( , $second ) = $this->render_connect();
+		$this->monokulo_answers( self::response( 200, self::FINISH ) );
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'shop_manager' ) ) );
+		$this->assertStringContainsString( 'monokulo_connect_error=nonce', $this->connect_return( array( 'token' => 't', 'nonce' => $first ) ), 'another admin' );
+
+		wp_set_current_user( $admin );
+		$this->assertStringContainsString( 'monokulo_connected=1', $this->connect_return( array( 'token' => 't', 'nonce' => $second ) ) );
 		$this->assertCount( 1, $this->sent );
 	}
 
@@ -177,7 +187,7 @@ class ConnectTest extends MonokuloTestCase {
 		$gateway = new WC_Gateway_Monokulo();
 		$this->assertSame( 'https://mine.example/monokulo', $gateway->validate_address_field( 'address', "  https://mine.example/monokulo/ \n" ) );
 		$this->assertSame( 'http://localhost:8081', $gateway->validate_address_field( 'address', 'http://localhost:8081' ) );
-		foreach ( array( '', 'monokulo.com', 'ftp://monokulo.com', 'javascript:alert(1)', 'https://' ) as $typed ) {
+		foreach ( array( '', 'monokulo.com', 'ftp://monokulo.com', 'javascript:alert(1)', 'https://', 'https://me:pw@monokulo.com', 'https://monokulo.com/?x=1', 'https://monokulo.com/#top' ) as $typed ) {
 			$this->assertSame( self::ADDRESS, $gateway->validate_address_field( 'address', $typed ), $typed );
 		}
 	}
@@ -192,9 +202,11 @@ class ConnectTest extends MonokuloTestCase {
 			monokulo_connect_notice();
 			return (string) ob_get_clean();
 		};
-		$this->assertStringContainsString( 'Your Monero wallet is connected', $notice( array( 'monokulo_connected' => '1' ) ) );
+		$this->assertStringContainsString( 'Your store is connected.', $notice( array( 'monokulo_connected' => '1' ) ) );
 		$this->assertStringContainsString( 'has not set its public address', $notice( array( 'monokulo_connect_error' => 'unavailable' ) ) );
-		$this->assertStringContainsString( 'Could not connect your Monero wallet', $notice( array( 'monokulo_connect_error' => 'finish' ) ) );
+		$this->assertStringContainsString( 'could not be reached', $notice( array( 'monokulo_connect_error' => 'unreachable' ) ) );
+		$this->assertStringContainsString( 'already used or has expired', $notice( array( 'monokulo_connect_error' => 'nonce' ) ) );
+		$this->assertStringContainsString( 'did not hand over the store', $notice( array( 'monokulo_connect_error' => 'finish' ) ) );
 		$this->assertStringNotContainsString( 'Monero', $notice( array( 'section' => 'bacs', 'monokulo_connected' => '1' ) ) );
 	}
 }
