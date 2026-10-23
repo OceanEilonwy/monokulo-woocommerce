@@ -33,9 +33,6 @@ if ! wp core is-installed 2> /dev/null; then
 		--admin_password=admin-password-1 --admin_email=admin@example.test --skip-email
 fi
 
-mkdir -p /var/www/html/wp-content/mu-plugins
-cp /usr/src/mu-plugins/*.php /var/www/html/wp-content/mu-plugins/
-
 wp plugin activate woocommerce
 # A new WooCommerce store starts in "coming soon" mode, which hides the shop
 # from customers.

@@ -22,17 +22,11 @@ ever holds a view key; no spend key touches the shop or Monokulo.
 
 ## Connect
 
-1. Tell the plugin your Monokulo's address. Its Connect button goes to the
-   address the `monokulo_control_plane_base_url` filter returns, for example
-   in a must-use plugin (`wp-content/mu-plugins/monokulo-address.php`):
-
-   ```php
-   <?php
-   add_filter( 'monokulo_control_plane_base_url', fn () => 'https://pay.example.com' );
-   ```
-
-2. **WooCommerce > Settings > Payments > Monokulo**, then **Connect your
-   Monero wallet**.
+1. **WooCommerce > Settings > Payments > Monokulo**. **Monokulo address**
+   starts at the public Monokulo, `https://monokulo.com`. If your store is
+   on another Monokulo (your own, say), type its address and **Save
+   changes**.
+2. **Connect your Monero wallet**.
 3. Sign in to Monokulo (or sign up) in the page that opens. It finds your
    store by the shop's address:
    - one of your stores has the shop's site: confirm, and you're done;
@@ -42,7 +36,7 @@ ever holds a view key; no spend key touches the shop or Monokulo.
    A store you made without a site can take the shop's: add the site in
    the store's settings (the *Store* card), then connect.
 4. You're back on the plugin's settings, connected. Connecting fills in the
-   Monokulo address and the store's keys and turns Monero on at checkout.
+   checkout address and the store's keys and turns Monero on at checkout.
 
 Monokulo only sends the connect flow back to the shop over **https** (plain
 http only for `localhost` or a `.onion` address).
@@ -132,8 +126,8 @@ scripts/test down
 ```
 
 Admin: `http://localhost:8092/wp-admin/`, user `admin`, password
-`admin-password-1`. The test shop's must-use plugin
-(`docker/mu-plugins`) points Connect at `http://localhost:8081`.
+`admin-password-1`. The smoke test sets the shop's Monokulo address to
+`http://localhost:8081`, where `scripts/smoke` starts one.
 
 - **wordpress**: the plugin booted inside WordPress with WooCommerce by
   WordPress's PHPUnit test library, each test in a rolled-back
