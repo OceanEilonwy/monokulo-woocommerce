@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!--
+    WordPress Coding Standards for the plugin's own code (not its tests),
+    and PHP 8.1 compatibility: scripts/test lint.
+-->
+<ruleset name="Monokulo for WooCommerce">
+    <file>monokulo.php</file>
+    <file>uninstall.php</file>
+    <file>includes</file>
+
+    <arg name="extensions" value="php"/>
+    <arg value="sp"/>
+    <arg name="colors"/>
+
+    <config name="testVersion" value="8.1-"/>
+    <config name="minimum_wp_version" value="6.5"/>
+
+    <rule ref="WordPress-Extra"/>
+    <rule ref="WordPress-Docs"/>
+    <rule ref="PHPCompatibilityWP"/>
+
+    <rule ref="WordPress.WP.I18n">
+        <properties>
+            <property name="text_domain" type="array">
+                <element value="monokulo"/>
+            </property>
+        </properties>
+    </rule>
+    <rule ref="WordPress.WP.Capabilities">
+        <properties>
+            <property name="custom_capabilities" type="array">
+                <element value="manage_woocommerce"/>
+            </property>
+        </properties>
+    </rule>
+    <rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+        <properties>
+            <property name="prefixes" type="array">
+                <element value="monokulo"/>
+                <element value="WC_Gateway_Monokulo"/>
+            </property>
+        </properties>
+    </rule>
+</ruleset>

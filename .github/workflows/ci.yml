@@ -5,7 +5,8 @@
 # - test: WordPress 7.1.3 with WooCommerce 11.2.1 on PHP 8.1, 8.4 and 8.5:
 #   the zip installed in the shop with WP-CLI, then the wordpress suite.
 #   Webhooks are tested against Monokulo's published vectors (tests/vectors,
-#   pinned in tests/vectors/PIN). 8.4 also reports coverage.
+#   pinned in tests/vectors/PIN). 8.4 also reports coverage and runs
+#   WordPress Coding Standards (scripts/test lint).
 # - vectors: the vendored vectors are still the ones at the pinned commit.
 # - smoke: against a real Monokulo built from the pinned commit (or a given
 #   image): on main, nightly and by hand, not on pull requests (building
@@ -54,6 +55,9 @@ jobs:
         run: scripts/test up
       - name: Run the tests
         run: scripts/test all
+      - name: WordPress Coding Standards
+        if: matrix.php == '8.4'
+        run: scripts/test lint
       - name: Coverage summary
         if: matrix.coverage
         run: |
