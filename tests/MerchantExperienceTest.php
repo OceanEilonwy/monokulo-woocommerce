@@ -54,7 +54,6 @@ class MerchantExperienceTest extends WP_UnitTestCase {
 		$seed->update_option( 'endpoint', 'https://monokulo.test' );
 		$seed->update_option( 'public_key', 'pk_shop_connected' );
 		$seed->update_option( 'secret_token', 'sk_shop_secret' );
-		$seed->update_option( 'connection_version', WC_Gateway_Monokulo::CONNECTION_VERSION );
 		$seed->update_option( 'webhook_signing_secret', 'whsec_experience' );
 		return new WC_Gateway_Monokulo();
 	}

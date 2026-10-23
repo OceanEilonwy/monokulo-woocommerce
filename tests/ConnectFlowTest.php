@@ -217,7 +217,6 @@ class ConnectFlowTest extends WP_UnitTestCase {
 			$saved->get_option( 'onion_endpoint' ),
 			'Monokulo\'s onion address is kept, for customers shopping on the shop\'s own .onion address.'
 		);
-		$this->assertSame( WC_Gateway_Monokulo::CONNECTION_VERSION, $saved->get_option( 'connection_version' ), 'A new connection records the plugin\'s connection version.' );
 		$this->assertSame( 'pk_connect_test_123', $saved->get_option( 'public_key' ) );
 		$this->assertSame(
 			'sk_connect_test_456',
@@ -305,7 +304,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		);
 
 		$this->assertStringContainsString( 'monokulo_connect_error=unavailable', $redirect_url );
-		$this->assertSame( '', ( new WC_Gateway_Monokulo() )->get_option( 'connection_version', '' ) );
+		$this->assertSame( '', ( new WC_Gateway_Monokulo() )->get_option( 'public_key' ) );
 	}
 
 	/**

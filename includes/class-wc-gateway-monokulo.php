@@ -76,28 +76,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const CONNECT_NAME = 'WooCommerce';
 
 	/**
-	 * The version of the connection this plugin stores, written to the
-	 * `connection_version` setting by `process_connect_return()` whenever
-	 * the connect flow succeeds.
-	 *
-	 * Version `2` is the first where `endpoint` is Monokulo's own public
-	 * address. Before it, `/finish` handed plugins the engine's address,
-	 * which no longer accepts orders from anything but Monokulo. An install
-	 * connected by an older plugin has credentials but no
-	 * `connection_version` at all, which is how it is recognised - never by
-	 * looking at the URL it holds. Such an install needs a reconnect:
-	 * `is_available()` keeps the gateway off the checkout (rather than
-	 * letting orders fail) and an admin notice asks the merchant to
-	 * reconnect (`render_reconnect_notice()`).
-	 *
-	 * Bump this whenever a stored connection from an older plugin can no
-	 * longer work as-is.
-	 *
-	 * @var string
-	 */
-	const CONNECTION_VERSION = '2';
-
-	/**
 	 * How this plugin names itself to Monokulo when it creates an order, in
 	 * a `Monokulo-Client` header: Monokulo records the order as the
 	 * WooCommerce plugin's (`crates/monokulo/src/http/pay.rs`,
@@ -479,9 +457,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// renders the settings form, and the connect callback is a separate
 		// request).
 		add_action( 'admin_notices', array( $this, 'maybe_render_connect_notice' ) );
-		// The site-wide "please reconnect" notice is registered in
-		// `monokulo.php` instead, so it shows on every admin screen whether
-		// or not WooCommerce has built its gateways on that request.
 	}
 
 	/**
@@ -630,7 +605,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return false;
 		}
 
-		return $this->has_credentials() && ! $this->needs_reconnect();
+		return $this->has_credentials();
 	}
 
 	/**
@@ -641,58 +616,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 */
 	private function has_credentials() {
 		return '' !== $this->endpoint && '' !== $this->public_key && '' !== $this->secret_token;
-	}
-
-	/**
-	 * Whether this install holds a connection made before the current
-	 * `CONNECTION_VERSION` and must reconnect. See that constant.
-	 *
-	 * @return bool
-	 */
-	public function needs_reconnect() {
-		return self::settings_need_reconnect( $this->settings );
-	}
-
-	/**
-	 * `needs_reconnect()` for a raw settings array (the
-	 * `woocommerce_monokulo_settings` option), so `monokulo.php`'s admin
-	 * notice can ask without building a gateway. A store that has never
-	 * connected at all doesn't "need a reconnect"; it just isn't connected.
-	 *
-	 * @param mixed $settings The saved settings array, or anything else if
-	 *                        nothing was ever saved.
-	 * @return bool
-	 */
-	public static function settings_need_reconnect( $settings ) {
-		if ( ! is_array( $settings ) ) {
-			return false;
-		}
-		$connected = ! empty( $settings['endpoint'] ) || ! empty( $settings['public_key'] ) || ! empty( $settings['secret_token'] );
-		$version   = isset( $settings['connection_version'] ) ? (string) $settings['connection_version'] : '';
-
-		return $connected && self::CONNECTION_VERSION !== $version;
-	}
-
-	/**
-	 * Shows every WooCommerce manager, on every admin screen, that the
-	 * store must reconnect before it can take Monero payments again. Hooked
-	 * on `admin_notices` from `monokulo.php`.
-	 */
-	public static function render_reconnect_notice() {
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
-			return;
-		}
-		if ( ! self::settings_need_reconnect( get_option( 'woocommerce_monokulo_settings' ) ) ) {
-			return;
-		}
-		$settings_url = admin_url( 'admin.php?page=wc-settings&tab=checkout&section=monokulo' );
-		echo '<div class="notice notice-warning"><p><strong>' .
-			esc_html__( 'Monokulo: please reconnect your Monero wallet.', 'monokulo' ) .
-			'</strong> ' .
-			esc_html__( 'This store was connected by an older version of the Monokulo plugin, which can no longer create orders. Monero payments are hidden at checkout until you reconnect.', 'monokulo' ) .
-			' <a href="' . esc_url( $settings_url ) . '">' .
-			esc_html__( 'Reconnect now', 'monokulo' ) .
-			'</a></p></div>';
 	}
 
 	/**
@@ -803,7 +726,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @throws Exception See above.
 	 */
 	private function create_monokulo_order( WC_Order $order ) {
-		if ( ! $this->has_credentials() || $this->needs_reconnect() ) {
+		if ( ! $this->has_credentials() ) {
 			// Reachable even though `is_available()` should normally have
 			// kept an unusable gateway off the checkout entirely - e.g. an
 			// already-rendered checkout page submitted after the connection
@@ -1275,9 +1198,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				<label for="<?php echo esc_attr( $field_key ); ?>"><?php esc_html_e( 'Connect your Monero wallet', 'monokulo' ); ?></label>
 			</th>
 			<td class="forminp">
-				<?php if ( $this->needs_reconnect() ) : ?>
-					<p><strong><?php esc_html_e( 'Reconnect needed: this store was connected by an older plugin version, so Monero payments are hidden at checkout until you reconnect.', 'monokulo' ); ?></strong></p>
-				<?php elseif ( $this->has_credentials() ) : ?>
+				<?php if ( $this->has_credentials() ) : ?>
 					<p>
 						<?php esc_html_e( 'Connected as', 'monokulo' ); ?>
 						<code><?php echo esc_html( $this->public_key ); ?></code>
@@ -1299,28 +1220,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		</tr>
 		<?php
 		return ob_get_clean();
-	}
-
-	/**
-	 * `'connect'`'s own `type` (`monokulo_connect`) has no real form input
-	 * for `process_admin_options()` to read back on save - it only ever
-	 * renders a link. Without this method, `get_field_value()` would fall
-	 * through to `validate_text_field()` on a `null` POST value (checked
-	 * directly, `abstract-wc-settings-api.php::get_field_value()`), which is
-	 * harmless but pointless (nothing should ever read a
-	 * `monokulo_connect` settings key) and, on PHP 8.1+, a `null`-to-string
-	 * coercion warning waiting to happen the moment that fallback path's own
-	 * implementation changes. Returning `''` directly is the explicit,
-	 * intentional no-op this field type actually needs - the *real* save
-	 * path for this field's effect is `process_connect_return()` below, not
-	 * WooCommerce's ordinary settings-form POST at all.
-	 *
-	 * @param string $key   Field key.
-	 * @param mixed  $value Posted value (always unused here).
-	 * @return string Always `''`.
-	 */
-	public function validate_monokulo_connect_field( $key, $value ) {
-		return '';
 	}
 
 	/**
@@ -1456,9 +1355,6 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// enables the gateway outright, not just fills in fields for the
 		// merchant to separately flip a switch on afterward.
 		$this->update_option( 'enabled', 'yes' );
-		// Marks this connection as made by this plugin version, whose
-		// `endpoint` is Monokulo's own address - see `CONNECTION_VERSION`.
-		$this->update_option( 'connection_version', self::CONNECTION_VERSION );
 
 		return $this->build_settings_url( array( 'monokulo_connected' => '1' ) );
 	}
