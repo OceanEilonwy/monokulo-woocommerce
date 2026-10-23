@@ -43,32 +43,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 	/**
-	 * The one, fixed address of Monokulo's own hosted service - where the
-	 * connect flow starts (`crates/monokulo/src/http/connect.rs`). The
-	 * address orders are then created at is the `endpoint` that flow's
-	 * `/finish` returns (`$api_base_url`), which is the same Monokulo
-	 * instance's configured public address; keeping the two separate lets
-	 * an instance serve its connect pages and its checkout from different
+	 * The Monokulo the "Monokulo address" setting starts at: the public
+	 * instance. Merchants who run their own Monokulo, or use another, change
+	 * the setting before connecting. It's where the connect flow starts
+	 * (`crates/monokulo/src/http/connect.rs`); orders are then created at the
+	 * `endpoint` that flow's `/finish` returns (`$api_base_url`), the same
+	 * Monokulo's configured public address. Keeping the two apart lets an
+	 * instance serve its connect pages and its checkout from different
 	 * addresses (for example a clearnet dashboard and an onion checkout).
-	 * For the hosted product there is exactly one such service, so this is
-	 * a class constant rather than something a merchant types in - the way
-	 * a Stripe or WooCommerce Payments extension hardcodes its own API host.
-	 *
-	 * **This is a placeholder, deliberately, not a real address**: as of
-	 * this step, Monokulo's control plane has no real, decided
-	 * production domain yet (checked `docs/WOOCOMMERCE_ROADMAP.md` and
-	 * `work_notes.md` directly - neither names one). `cloud.monokulo.example`
-	 * is lifted verbatim from the roadmap doc's own illustrative URL (Stage
-	 * 6) specifically *because* it's already an obvious non-address -
-	 * `.example` is the IANA-reserved TLD that can never resolve to anything
-	 * real (RFC 2606) - rather than inventing a new placeholder that could
-	 * later be mistaken for a real one. Whoever picks the real production
-	 * domain only has to change this one line (and, ideally, drop the filter
-	 * override below instead of leaving both).
 	 *
 	 * @var string
 	 */
-	const CONTROL_PLANE_BASE_URL = 'https://cloud.monokulo.example';
+	const DEFAULT_MONOKULO_ADDRESS = 'https://monokulo.com';
 
 	/**
 	 * The `platform` path segment this plugin identifies itself as to the
@@ -572,15 +558,26 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			// (whose own `generate_title_html()` renders fixed markup this
 			// step needs to deviate from: a real `<a href=...>` built fresh
 			// on every render, not static text).
+			// Where Connect goes, as OpenCart's "Monokulo address" setting
+			// is. Read through `get_control_plane_base_url()`, so the
+			// `monokulo_control_plane_base_url` filter can still override it.
+			'address'     => array(
+				'title'       => __( 'Monokulo address', 'monokulo' ),
+				'type'        => 'text',
+				'description' => __( 'The Monokulo your store is on: the public one at monokulo.com, or your own. Save after changing it, then Connect.', 'monokulo' ),
+				'default'     => self::DEFAULT_MONOKULO_ADDRESS,
+				'placeholder' => self::DEFAULT_MONOKULO_ADDRESS,
+				'desc_tip'    => true,
+			),
 			'connect'     => array(
 				'type'        => 'monokulo_connect',
 				'description' => __( 'You will be sent to Monokulo to sign in (or sign up) and confirm the connection, then returned here automatically.', 'monokulo' ),
 			),
 
 			'endpoint'    => array(
-				'title'       => __( 'Monokulo address', 'monokulo' ),
+				'title'       => __( 'Checkout address', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'The public address of the Monokulo instance this store uses. Filled in automatically by Connect above.', 'monokulo' ),
+				'description' => __( 'Where orders are made and customers pay, as Monokulo said when this store connected. Filled in automatically by Connect above.', 'monokulo' ),
 				'default'     => '',
 				'placeholder' => 'https://pay.example.com',
 				'desc_tip'    => true,
@@ -1094,7 +1091,46 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @return string
 	 */
 	private function get_control_plane_base_url() {
-		return apply_filters( 'monokulo_control_plane_base_url', self::CONTROL_PLANE_BASE_URL );
+		$address = self::clean_address( (string) $this->get_option( 'address', self::DEFAULT_MONOKULO_ADDRESS ) );
+		return apply_filters( 'monokulo_control_plane_base_url', null === $address ? self::DEFAULT_MONOKULO_ADDRESS : $address );
+	}
+
+	/**
+	 * A typed Monokulo address, cleaned (trimmed, no trailing slash), or
+	 * null when it isn't an http(s) address with a host. Same rule as
+	 * OpenCart's `ConnectLink::address()`.
+	 *
+	 * @param string $typed What the merchant typed.
+	 * @return string|null
+	 */
+	public static function clean_address( $typed ) {
+		$address = rtrim( trim( $typed ), '/' );
+		$scheme  = wp_parse_url( $address, PHP_URL_SCHEME );
+		$host    = wp_parse_url( $address, PHP_URL_HOST );
+		if ( ! in_array( strtolower( (string) $scheme ), array( 'http', 'https' ), true ) || empty( $host ) ) {
+			return null;
+		}
+		return $address;
+	}
+
+	/**
+	 * Saves the "Monokulo address" setting cleaned, or refuses one that
+	 * isn't an http(s) address: the old value stays and the settings page
+	 * says why.
+	 *
+	 * @param string $key   Field key (`'address'`).
+	 * @param mixed  $value Posted value.
+	 * @return string
+	 */
+	public function validate_address_field( $key, $value ) {
+		$address = self::clean_address( (string) $value );
+		if ( null === $address ) {
+			if ( class_exists( 'WC_Admin_Settings' ) ) {
+				WC_Admin_Settings::add_error( __( 'The Monokulo address must start with https:// (or http://), like https://monokulo.com.', 'monokulo' ) );
+			}
+			return (string) $this->get_option( $key, self::DEFAULT_MONOKULO_ADDRESS );
+		}
+		return $address;
 	}
 
 	/**
@@ -1267,6 +1303,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 						: esc_html__( 'Connect your Monero wallet', 'monokulo' );
 					?>
 				</a>
+				<p>
+					<?php esc_html_e( 'Connects to', 'monokulo' ); ?>
+					<code><?php echo esc_html( $this->get_control_plane_base_url() ); ?></code>
+				</p>
 				<?php echo $this->get_description_html( $data ); // WPCS: XSS ok. ?>
 			</td>
 		</tr>

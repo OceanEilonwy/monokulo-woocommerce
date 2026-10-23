@@ -62,5 +62,4 @@ RUN echo 'umask 000' >> /etc/apache2/envvars \
  && chown -R www-data:www-data /var/www/html
 
 COPY docker/wp-setup /usr/local/bin/wp-setup
-COPY docker/mu-plugins/ /usr/src/mu-plugins/
 RUN chmod +x /usr/local/bin/wp-setup

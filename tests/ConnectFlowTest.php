@@ -34,10 +34,8 @@ class ConnectFlowTest extends WP_UnitTestCase {
 	 * The real control plane base URL this whole suite points the gateway
 	 * at, via the `monokulo_control_plane_base_url` filter
 	 * `WC_Gateway_Monokulo::get_control_plane_base_url()` exposes - a fake,
-	 * obviously-non-resolving host, not `WC_Gateway_Monokulo::
-	 * CONTROL_PLANE_BASE_URL`'s own real (placeholder) value, so this test
-	 * suite is exercising the actual filter mechanism a self-hoster would
-	 * use, not just reading the class constant back.
+	 * obviously-non-resolving host. The tests at the end of this file take
+	 * the filter off to check the "Monokulo address" setting itself.
 	 */
 	const TEST_CONTROL_PLANE_BASE_URL = 'https://control-plane.test';
 
@@ -459,6 +457,46 @@ class ConnectFlowTest extends WP_UnitTestCase {
 			$after = new WC_Gateway_Monokulo();
 			$this->assertSame( '', $after->get_option( 'public_key' ), $case );
 			$this->assertSame( '', $after->get_option( 'secret_token' ), $case );
+		}
+	}
+
+	/**
+	 * Without a saved setting (a new install), Connect goes to the public
+	 * Monokulo.
+	 */
+	public function test_connect_goes_to_monokulo_com_by_default() {
+		remove_filter( 'monokulo_control_plane_base_url', array( $this, 'filter_control_plane_base_url' ) );
+		delete_option( 'woocommerce_monokulo_settings' );
+
+		list( $html ) = $this->render_connect_button_and_capture_nonce();
+
+		$this->assertStringContainsString( 'https://monokulo.com/plugins/connect/woocommerce?', $html );
+	}
+
+	/**
+	 * A saved "Monokulo address" is where Connect goes.
+	 */
+	public function test_connect_goes_to_the_saved_monokulo_address() {
+		remove_filter( 'monokulo_control_plane_base_url', array( $this, 'filter_control_plane_base_url' ) );
+		update_option( 'woocommerce_monokulo_settings', array( 'address' => 'https://pay.example.com' ) );
+
+		list( $html ) = $this->render_connect_button_and_capture_nonce();
+
+		$this->assertStringContainsString( 'https://pay.example.com/plugins/connect/woocommerce?', $html );
+	}
+
+	/**
+	 * Saving the setting trims it and drops a trailing slash; anything but
+	 * an http(s) address is refused and the old value kept.
+	 */
+	public function test_the_monokulo_address_is_cleaned_or_refused_on_save() {
+		update_option( 'woocommerce_monokulo_settings', array( 'address' => 'https://pay.example.com' ) );
+		$gateway = new WC_Gateway_Monokulo();
+
+		$this->assertSame( 'https://mine.example/monokulo', $gateway->validate_address_field( 'address', "  https://mine.example/monokulo/ \n" ) );
+		$this->assertSame( 'http://localhost:8081', $gateway->validate_address_field( 'address', 'http://localhost:8081' ) );
+		foreach ( array( '', 'monokulo.com', 'ftp://monokulo.com', 'javascript:alert(1)', 'https://' ) as $typed ) {
+			$this->assertSame( 'https://pay.example.com', $gateway->validate_address_field( 'address', $typed ), $typed );
 		}
 	}
 }
