@@ -21,7 +21,7 @@ compose() {
 run() {
 	# umask 0: files the tests make in WordPress (uploads, logs) stay
 	# writable by Apache, as Apache's stay writable by the tests.
-	compose exec -T --user "$(id -u):$(id -g)" -e HOME=/tmp -e MONOKULO_URL="${MONOKULO_URL:-}" -w /repo wordpress sh -c 'umask 0000 && exec "$@"' sh "$@"
+	compose exec -T --user "$(id -u):$(id -g)" -e HOME=/tmp -e MONOKULO_URL="${MONOKULO_URL:-}" -e MONOKULO_ONION="${MONOKULO_ONION:-}" -w /repo wordpress sh -c 'umask 0000 && exec "$@"' sh "$@"
 }
 
 case "${1:-all}" in

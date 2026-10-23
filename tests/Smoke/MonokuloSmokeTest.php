@@ -7,8 +7,9 @@ require_once dirname(__DIR__) . '/fixtures/class-monokulo-api-fixtures.php';
 
 /**
  * The installed plugin against a real Monokulo (MONOKULO_URL, a fresh
- * instance started with docker/monokulo-smoke.toml), as a merchant and a
- * customer use it, over HTTP:
+ * instance scripts/smoke starts: at a host's root, or under a path behind
+ * a proxy; MONOKULO_ONION is its onion address, or empty when it has
+ * none), as a merchant and a customer use it, over HTTP:
  *
  * 1. the merchant signs up to Monokulo and adds a watch-only wallet;
  * 2. in WordPress, WooCommerce > Settings > Payments > Monokulo, types
@@ -20,8 +21,11 @@ require_once dirname(__DIR__) . '/fixtures/class-monokulo-api-fixtures.php';
  *    with it through WooCommerce's Store API (what the block checkout
  *    posts): the plugin makes the Monokulo order through the API and
  *    sends them to its checkout, which loads; the order, read with the
- *    store's public key, is pending;
- * 5. the shop's webhook address answers, and refuses an unsigned delivery.
+ *    store's public key, is pending; the shop's order links its page on
+ *    the merchant's Monokulo dashboard, which loads for the merchant;
+ * 5. a guest on the shop's onion address is sent to the onion checkout,
+ *    or, with no onion address, told Monero can't be paid over Tor;
+ * 6. the shop's webhook address answers, and refuses an unsigned delivery.
  *
  * And the unit tests' API fixtures are what this Monokulo's OpenAPI
  * document describes.
@@ -39,6 +43,7 @@ final class MonokuloSmokeTest extends TestCase {
 	private const ADMIN_PASSWORD = 'admin-password-1';
 
 	private string $monokulo;
+	private string $onion;
 	private Browser $browser;
 
 	protected function setUp(): void {
@@ -47,13 +52,16 @@ final class MonokuloSmokeTest extends TestCase {
 			$this->markTestSkipped('Set MONOKULO_URL to a fresh Monokulo (scripts/smoke starts one).');
 		}
 		$this->monokulo = rtrim($url, '/');
+		$this->onion = (string)getenv('MONOKULO_ONION');
 		$this->browser = new Browser();
 	}
 
 	public function test_connect_then_a_customer_is_sent_to_pay(): void {
 		$this->signUpToMonokulo();
 		$publicKey = $this->connectTheShop();
-		$checkout = $this->buyWithMonero();
+		$placed = $this->buyWithMonero(new Browser());
+		$this->assertSame(200, $placed->status, $placed->body);
+		$checkout = (string)$placed->json()['payment_result']['redirect_url'];
 		$this->assertMatchesRegularExpression('#\A' . preg_quote($this->monokulo, '#') . '/checkout/([^/?]+)\z#', $checkout);
 		$orderId = basename($checkout);
 
@@ -64,7 +72,27 @@ final class MonokuloSmokeTest extends TestCase {
 		$this->assertSame(200, $order->status, $order->body);
 		$this->assertSame('pending', $order->json()['status']);
 		$this->assertSame(0, $order->json()['confirmations']);
-		$this->assertSame('/checkout/' . $orderId, $order->json()['_links']['mk:checkout']['href']);
+		$this->assertSame(parse_url($this->monokulo, PHP_URL_PATH) . '/checkout/' . $orderId, $order->json()['_links']['mk:checkout']['href']);
+
+		// The shop's order links its page on the merchant's dashboard, which
+		// loads for the merchant, signed in to Monokulo.
+		$shopOrder = $this->browser->get(self::SHOP . 'wp-admin/admin.php?page=wc-orders&action=edit&id=' . $placed->json()['order_id']);
+		$this->assertSame(200, $shopOrder->status);
+		$this->assertMatchesRegularExpression('#In Monokulo: (' . preg_quote($this->monokulo, '#') . '/stores/[^/]+/orders/' . preg_quote($orderId, '#') . ')#', $shopOrder->text());
+		preg_match('#In Monokulo: (' . preg_quote($this->monokulo, '#') . '/stores/[^/]+/orders/' . preg_quote($orderId, '#') . ')#', $shopOrder->text(), $m);
+		$dashboard = $this->browser->get($m[1]);
+		$this->assertSame(200, $dashboard->status, $dashboard->text());
+		$this->assertStringContainsString($orderId, $dashboard->body);
+
+		// A customer on the shop's onion address stays on Tor.
+		$onTor = $this->buyWithMonero(new Browser(['Host' => 'shop2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion']), false);
+		if ('' !== $this->onion) {
+			$this->assertSame(200, $onTor->status, $onTor->body);
+			$this->assertMatchesRegularExpression('#\A' . preg_quote($this->onion, '#') . '/checkout/[^/?]+\z#', (string)$onTor->json()['payment_result']['redirect_url']);
+		} else {
+			$this->assertSame(400, $onTor->status, $onTor->body);
+			$this->assertStringContainsString('cannot be made over Tor', $onTor->body);
+		}
 
 		// Plain permalinks: the REST API is ?rest_route=.
 		$webhook = $this->browser->post(self::SHOP . '?rest_route=/monokulo/v1/webhook', '{"event":"order.paid"}', ['Content-Type' => 'application/json']);
@@ -209,6 +237,11 @@ final class MonokuloSmokeTest extends TestCase {
 
 		$settings = $this->browser->get((string)$return->location());
 		$this->assertMatchesRegularExpression('/Connected as\s*<code>(pk_[^<]+)<\/code>/', $settings->body);
+		if ('' !== $this->onion) {
+			$this->assertStringContainsString('<code>' . parse_url($this->onion, PHP_URL_HOST) . '</code>', $settings->body, 'the onion address the handshake gave');
+		} else {
+			$this->assertStringNotContainsString('.onion', $settings->body);
+		}
 		preg_match('/Connected as\s*<code>(pk_[^<]+)<\/code>/', $settings->body, $m);
 
 		return $m[1];
@@ -229,11 +262,12 @@ final class MonokuloSmokeTest extends TestCase {
 	}
 
 	/**
-	 * A guest checkout with Monero through the Store API, in a browser of
-	 * its own; returns the Monokulo checkout it was sent to.
+	 * A guest checkout with Monero through the Store API, in `$customer`;
+	 * returns the Store API's answer to placing the order. The block
+	 * checkout page is checked on the shop's own address only (WordPress
+	 * sends pages on another host to its own; the Store API answers there).
 	 */
-	private function buyWithMonero(): string {
-		$customer = new Browser();
+	private function buyWithMonero(Browser $customer, bool $checkoutPage = true): Page {
 		// Plain permalinks: the REST API is ?rest_route=.
 		$api = self::SHOP . '?rest_route=/wc/store/v1/';
 
@@ -253,11 +287,13 @@ final class MonokuloSmokeTest extends TestCase {
 		$this->assertContains('monokulo', $methods, 'Monero is offered: ' . json_encode($methods));
 
 		// The block checkout loads the payment method's script and settings.
-		$checkout = $customer->get(self::SHOP . '?pagename=checkout');
-		$this->assertSame(200, $checkout->status, $checkout->text());
-		$this->assertStringContainsString('wp-block-woocommerce-checkout', $checkout->body, 'the block checkout');
-		$this->assertStringContainsString('/monokulo/assets/blocks.js', $checkout->body);
-		$this->assertStringContainsString('"monokulo":{"title":', rawurldecode($checkout->body), 'its title, description and icon');
+		if ($checkoutPage) {
+			$checkout = $customer->get(self::SHOP . '?pagename=checkout');
+			$this->assertSame(200, $checkout->status, $checkout->text());
+			$this->assertStringContainsString('wp-block-woocommerce-checkout', $checkout->body, 'the block checkout');
+			$this->assertStringContainsString('/monokulo/assets/blocks.js', $checkout->body);
+			$this->assertStringContainsString('"monokulo":{"title":', rawurldecode($checkout->body), 'its title, description and icon');
+		}
 
 		$address = [
 			'first_name' => 'Ada',
@@ -274,11 +310,12 @@ final class MonokuloSmokeTest extends TestCase {
 			'shipping_address' => array_diff_key($address, ['email' => true]),
 			'payment_method'   => 'monokulo',
 		]), $json);
-		$this->assertSame(200, $placed->status, $placed->body);
-		$result = $placed->json();
-		$this->assertSame('success', $result['payment_result']['payment_status'] ?? null, $placed->body);
-		$this->assertSame('pending', $result['status'], 'placed as Pending payment');
+		if (200 === $placed->status) {
+			$result = $placed->json();
+			$this->assertSame('success', $result['payment_result']['payment_status'] ?? null, $placed->body);
+			$this->assertSame('pending', $result['status'], 'placed as Pending payment');
+		}
 
-		return (string)$result['payment_result']['redirect_url'];
+		return $placed;
 	}
 }
