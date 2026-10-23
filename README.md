@@ -89,6 +89,9 @@ Monokulo shows those orders as *WooCommerce*. It reads the API's entry
 the customer gets a short message and the log gets Monokulo's problem: its
 title, what went wrong, and the problem's page.
 
+The amount is sent in the currency's own decimals, trailing zeros
+trimmed: `42.5` for EUR 42.50, `1500` for JPY 1,500.
+
 At the top of Monokulo's checkout the customer sees the store's name and
 what they're paying for: "Order #1042: Blue mug + 2 more", the order number
 they know from WooCommerce's emails, then the first item and how many
@@ -116,12 +119,16 @@ before changes nothing.
 | `order.double_spend_reversed` | A note |
 
 Every event adds a note to the order, with a link to the order in your
-Monokulo. Two things never move the order, and the note says why:
+Monokulo. A WooCommerce order can have several Monokulo orders: paying
+again after its total changed sends the customer to a new one. The plugin
+remembers them all, and Monokulo keeps watching them all:
 
-- an event for an order that is already paid: Monokulo's advice is never to
-  undo a payment on your own;
-- an event for an older payment request, from before the order's total
-  changed (the customer was then sent to pay a new one).
+- a payment to any of them pays the order, since the money arrived; one to
+  an older request says so in the note, so you can check the amount;
+- any other event about an older request is only a note;
+- a paid order never goes back (Monokulo's advice is never to undo a
+  payment on your own): a later event is a note, and so is more money (an
+  overpayment, or another of its requests paid too), for you to refund.
 
 Monokulo is non-custodial: refund an overpayment or an expired order's
 funds from your wallet yourself.

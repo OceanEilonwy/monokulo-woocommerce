@@ -570,16 +570,50 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
+	 * Currencies whose minor unit isn't a hundredth (ISO 4217): how many
+	 * decimals each has. Every other currency has two.
+	 */
+	const CURRENCY_DECIMALS = array(
+		'BIF' => 0,
+		'CLP' => 0,
+		'DJF' => 0,
+		'GNF' => 0,
+		'ISK' => 0,
+		'JPY' => 0,
+		'KMF' => 0,
+		'KRW' => 0,
+		'PYG' => 0,
+		'RWF' => 0,
+		'UGX' => 0,
+		'UYI' => 0,
+		'VND' => 0,
+		'VUV' => 0,
+		'XAF' => 0,
+		'XOF' => 0,
+		'XPF' => 0,
+		'BHD' => 3,
+		'IQD' => 3,
+		'JOD' => 3,
+		'KWD' => 3,
+		'LYD' => 3,
+		'OMR' => 3,
+		'TND' => 3,
+		'CLF' => 4,
+		'UYW' => 4,
+		'XMR' => 12,
+	);
+
+	/**
 	 * The total as Monokulo parses it: `.` for the point, no thousands
-	 * separator. Two decimals for fiat; XMR keeps the shop's price decimals,
-	 * up to twelve.
+	 * separator, in the currency's own decimals (2 for EUR, 0 for JPY, 12
+	 * for XMR), with trailing zeros trimmed: `42.5`, `1000`.
 	 *
 	 * @param float  $total    The order total.
 	 * @param string $currency The order currency.
 	 */
 	public static function format_amount( float $total, string $currency ): string {
-		$decimals = 'XMR' === strtoupper( $currency ) ? min( 12, max( 2, wc_get_price_decimals() ) ) : 2;
-		return number_format( $total, $decimals, '.', '' );
+		$amount = number_format( $total, self::CURRENCY_DECIMALS[ strtoupper( $currency ) ] ?? 2, '.', '' );
+		return str_contains( $amount, '.' ) ? rtrim( rtrim( $amount, '0' ), '.' ) : $amount;
 	}
 
 	/**
@@ -954,10 +988,20 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *   only. When they change the order's status, Monokulo sends that as its
 	 *   own `order.<status>` event.
 	 *
-	 * Each adds a note. A paid order is never moved back, and an event about
-	 * an older payment request (the total changed since) never moves the
-	 * order: the note says so, for the merchant to check. Unknown events are
-	 * logged and ignored, so a newer Monokulo doesn't break the shop.
+	 * Each adds a note. A shop order can have several Monokulo orders (a new
+	 * one each time its total changed, `META_ORDER_IDS`), and Monokulo
+	 * watches them all:
+	 *
+	 * - a payment to any of them pays the order: the money arrived. One to an
+	 *   older request says so in the note, for the merchant to check the
+	 *   amount;
+	 * - any other event about an older request is a note only;
+	 * - a paid order never goes back: a later event, or a second payment
+	 *   (an overpayment, or another request paid too), is a note, for the
+	 *   merchant to refund.
+	 *
+	 * Unknown events are logged and ignored, so a newer Monokulo doesn't
+	 * break the shop.
 	 *
 	 * @param WC_Order $order The order.
 	 * @param array    $event The decoded webhook body.
@@ -994,11 +1038,15 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			$note .= ' ' . sprintf( __( 'In Monokulo: %s', 'monokulo' ), $page );
 		}
 
-		if ( ( $paid || null !== $status ) && $order->get_meta( self::META_ORDER_ID ) !== $event['order_id'] ) {
+		$older = $order->get_meta( self::META_ORDER_ID ) !== $event['order_id'];
+
+		if ( $paid && $order->is_paid() ) {
 			$order->add_order_note(
-				$paid
-					? __( 'Monokulo: an older payment request for this order was paid, after the order total changed. Check the amount received before treating this order as paid.', 'monokulo' ) . ' ' . $note
-					: $note . ' ' . __( 'This is about an older payment request for this order, so its status is left as it is.', 'monokulo' )
+				$note . ' ' . sprintf(
+					/* translators: %s: Monokulo's order id */
+					__( 'The order was already paid, so nothing changes: this is more money for it (Monokulo order %s). Refund the extra yourself if needed.', 'monokulo' ),
+					$event['order_id']
+				)
 			);
 			return;
 		}
@@ -1008,7 +1056,16 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			if ( ! $order->payment_complete( $event['order_id'] ) ) {
 				throw new RuntimeException( 'WooCommerce could not complete the payment' );
 			}
-			$order->add_order_note( $note );
+			$order->add_order_note(
+				$older
+					? __( 'Monokulo: an older payment request for this order was paid, after the order total changed. Check the amount received.', 'monokulo' ) . ' ' . $note
+					: $note
+			);
+			return;
+		}
+
+		if ( null !== $status && $older ) {
+			$order->add_order_note( $note . ' ' . __( 'This is about an older payment request for this order, so its status is left as it is.', 'monokulo' ) );
 			return;
 		}
 

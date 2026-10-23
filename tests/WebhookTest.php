@@ -136,26 +136,105 @@ class WebhookTest extends MonokuloTestCase {
 	}
 
 	/**
-	 * After the total changed, the customer was sent to pay a new Monokulo
-	 * order. Events about the old one tell the merchant and leave the order.
+	 * After the total changed (or the first request expired), the customer
+	 * was sent to pay a new Monokulo order: the shop order has two.
 	 */
-	public function test_an_older_payment_request_never_moves_the_order() {
-		$order = self::order_paying( 'mko_old' );
-		$order->update_meta_data( WC_Gateway_Monokulo::META_ORDER_ID, 'mko_new' );
-		$order->add_meta_data( WC_Gateway_Monokulo::META_ORDER_IDS, 'mko_new' );
+	private static function order_with_an_older_request( string $old, string $new ): WC_Order {
+		$order = self::order_paying( $old );
+		$order->update_meta_data( WC_Gateway_Monokulo::META_ORDER_ID, $new );
+		$order->add_meta_data( WC_Gateway_Monokulo::META_ORDER_IDS, $new );
 		$order->save();
+		return $order;
+	}
 
-		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.expired', 'order_id' => 'mko_old' ) ) ) );
-		$this->assertSame( 'pending', wc_get_order( $order->get_id() )->get_status() );
-		$this->assertStringContainsString( 'older payment request', self::notes( wc_get_order( $order->get_id() ) ) );
+	/**
+	 * Events other than a payment about an older request are a note, and
+	 * never move the order.
+	 */
+	public function test_an_older_payment_requests_other_events_only_add_a_note() {
+		foreach ( array( 'order.expired', 'order.partial', 'order.pending', 'order.unconfirmed', 'order.confirming' ) as $event ) {
+			$order = self::order_with_an_older_request( 'mko_old_' . $event, 'mko_new_' . $event );
+			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_old_' . $event ) ) ), $event );
+			$order = wc_get_order( $order->get_id() );
+			$this->assertSame( 'pending', $order->get_status(), $event );
+			$this->assertStringContainsString( 'older payment request for this order, so its status is left as it is', self::notes( $order ), $event );
+		}
+	}
 
-		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_old' ) ) ) );
-		$order = wc_get_order( $order->get_id() );
-		$this->assertFalse( $order->is_paid() );
-		$this->assertStringContainsString( 'Check the amount received', self::notes( $order ) );
+	/**
+	 * Money that arrived for any of the order's requests pays it, and the
+	 * note says which, for the merchant to check the amount.
+	 */
+	public function test_a_payment_to_an_older_request_pays_the_order() {
+		foreach ( array( 'order.paid', 'order.overpaid' ) as $event ) {
+			$order = self::order_with_an_older_request( 'mko_old_' . $event, 'mko_new_' . $event );
+			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_old_' . $event ) ) ), $event );
+			$order = wc_get_order( $order->get_id() );
+			$this->assertTrue( $order->is_paid(), $event );
+			$this->assertSame( 'mko_old_' . $event, $order->get_transaction_id(), $event );
+			$this->assertStringContainsString( 'an older payment request for this order was paid', self::notes( $order ), $event );
+		}
+	}
 
-		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_new' ) ) ) );
+	/**
+	 * Once paid, a payment to the order's other request, or more money for
+	 * the same one, is a note for the merchant to refund; the order stays
+	 * as it is and keeps its first payment's transaction.
+	 */
+	public function test_a_second_payment_is_a_note() {
+		$order = self::order_with_an_older_request( 'mko_first', 'mko_second' );
+		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_second' ) ) );
 		$this->assertTrue( wc_get_order( $order->get_id() )->is_paid() );
+		$status = wc_get_order( $order->get_id() )->get_status();
+
+		foreach ( array( array( 'order.paid', 'mko_first' ), array( 'order.overpaid', 'mko_second' ) ) as list( $event, $monokulo_order ) ) {
+			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => $monokulo_order ) ) ), $event );
+			$order = wc_get_order( $order->get_id() );
+			$this->assertSame( $status, $order->get_status(), $event );
+			$this->assertSame( 'mko_second', $order->get_transaction_id(), $event );
+			$this->assertStringContainsString( 'already paid, so nothing changes: this is more money for it (Monokulo order ' . $monokulo_order . ')', self::notes( $order ), $event );
+		}
+	}
+
+	/**
+	 * A paid order never goes back, whichever of its requests the event is
+	 * about.
+	 */
+	public function test_a_paid_order_stays_paid_whatever_request_the_event_is_about() {
+		$order = self::order_with_an_older_request( 'mko_was', 'mko_is' );
+		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_was' ) ) );
+		foreach ( array( 'mko_was', 'mko_is' ) as $monokulo_order ) {
+			foreach ( array( 'order.expired', 'order.pending', 'order.partial' ) as $event ) {
+				$this->deliver( self::event( array( 'event' => $event, 'order_id' => $monokulo_order ) ) );
+				$this->assertTrue( wc_get_order( $order->get_id() )->is_paid(), "$event for $monokulo_order" );
+			}
+		}
+	}
+
+	/**
+	 * Every Monokulo order the shop order has had is known: an event for
+	 * any of them finds it, and one for none of them is refused.
+	 */
+	public function test_every_request_the_order_had_is_recognised() {
+		$order = self::order();
+		$this->monokulo_serves(
+			array(
+				'POST https://pay.example.com/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_a' ) ),
+			)
+		);
+		$gateway = self::connected_gateway();
+		$gateway->process_payment( $order->get_id() );
+		$this->monokulo_serves(
+			array(
+				'POST https://pay.example.com/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_b' ) ),
+			)
+		);
+		$gateway->process_payment( $order->get_id() );
+
+		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.expired', 'order_id' => 'order_a' ) ) ) );
+		$this->assertSame( 200, $this->deliver( self::event( array( 'event' => 'order.confirming', 'order_id' => 'order_b' ) ) ) );
+		$this->assertSame( 'on-hold', wc_get_order( $order->get_id() )->get_status() );
+		$this->assertSame( 404, $this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'order_c' ) ) ) );
 	}
 
 	/**
