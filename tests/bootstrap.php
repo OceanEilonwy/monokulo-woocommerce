@@ -51,3 +51,4 @@ function monokulo_test_signature( $body, $secret, $timestamp = null ) {
 }
 
 require $_tests_dir . '/includes/bootstrap.php';
+require __DIR__ . '/MonokuloTestCase.php';
