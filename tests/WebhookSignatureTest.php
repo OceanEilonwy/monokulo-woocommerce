@@ -63,7 +63,6 @@ class WebhookSignatureTest extends WP_UnitTestCase {
 	 */
 	private function verify( WC_Gateway_Monokulo $gateway, $raw_body, $signature, $now = self::KNOWN_VECTOR_TIMESTAMP ) {
 		$method = new ReflectionMethod( WC_Gateway_Monokulo::class, 'verify_webhook_signature' );
-		$method->setAccessible( true );
 		return $method->invoke( $gateway, $raw_body, $signature, $now );
 	}
 
