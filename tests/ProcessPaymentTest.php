@@ -445,7 +445,6 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 	 */
 	public function test_amounts_are_plain_decimals_with_the_right_precision() {
 		$format = new ReflectionMethod( WC_Gateway_Monokulo::class, 'format_amount' );
-		$format->setAccessible( true );
 
 		$this->assertSame( '42.50', $format->invoke( null, '42.5', 'USD' ) );
 		$this->assertSame( '1234567.00', $format->invoke( null, 1234567, 'EUR' ), 'No thousands separator.' );

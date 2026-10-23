@@ -47,7 +47,6 @@ class WebhookVectorsTest extends WP_UnitTestCase {
 
 	private function verify_at_sent_at( WC_Gateway_Monokulo $gateway, array $delivery ) {
 		$method = new ReflectionMethod( WC_Gateway_Monokulo::class, 'verify_webhook_signature' );
-		$method->setAccessible( true );
 		return $method->invoke( $gateway, $delivery['body'], $delivery['headers']['X-Monokulo-Signature'], self::vectors()['sent_at'] );
 	}
 
