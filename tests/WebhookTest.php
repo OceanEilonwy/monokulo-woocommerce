@@ -78,6 +78,7 @@ class WebhookTest extends MonokuloTestCase {
 			'order.paid'        => array( 'order.paid', array( 'processing', 'completed' ) ),
 			'order.overpaid'    => array( 'order.overpaid', array( 'processing', 'completed' ) ),
 			'order.expired'     => array( 'order.expired', array( 'cancelled' ) ),
+			'order.cancelled'   => array( 'order.cancelled', array( 'cancelled' ) ),
 		);
 	}
 
@@ -97,6 +98,7 @@ class WebhookTest extends MonokuloTestCase {
 			'order.paid'       => 'paid in full',
 			'order.overpaid'   => 'The excess is not refunded automatically',
 			'order.expired'    => 'Any funds received stay at the payment address',
+			'order.cancelled'  => 'cancelled in Monokulo and takes no payment any more',
 		);
 		foreach ( $cases as $event => $note ) {
 			$order = self::order_paying( 'mko_' . $event );
@@ -106,9 +108,9 @@ class WebhookTest extends MonokuloTestCase {
 	}
 
 	/**
-	 * The note links the order's page on the merchant's dashboard, as
-	 * Monokulo linked it when the order was made (`mk:dashboard-order`),
-	 * under any path Monokulo is served at.
+	 * The note links the order's page on the merchant's dashboard, as the
+	 * webhook links it (`mk:dashboard-order`, absolute), under any path
+	 * Monokulo is served at.
 	 */
 	public function test_a_paid_order_records_the_monokulo_order_and_links_to_it() {
 		$api = 'https://example.com/monokulo/api/v1';
@@ -121,22 +123,54 @@ class WebhookTest extends MonokuloTestCase {
 		$order = self::order();
 		self::connected_gateway( array( 'api' => $api ) )->process_payment( $order->get_id() );
 
-		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_linked', 'store' => array( 'id' => 'store-1', 'name' => 'Bakery' ) ) ) );
+		$this->deliver(
+			self::event(
+				array(
+					'event'    => 'order.paid',
+					'order_id' => 'mko_linked',
+					'store'    => array(
+						'id'   => 'store-1',
+						'name' => 'Bakery',
+					),
+					'_links'   => Monokulo_Api_Fixtures::webhook_links( 'mko_linked', 'https://example.com/monokulo', true ),
+				)
+			)
+		);
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'mko_linked', $order->get_transaction_id() );
 		$this->assertStringContainsString( 'Monokulo: paid in full. In Monokulo: https://example.com/monokulo/stores/store-1/orders/mko_linked', self::notes( $order ) );
 	}
 
 	/**
-	 * An order made before Monokulo linked its dashboard page (by 0.3.0)
-	 * has none kept: its notes say what happened, with no link.
+	 * Every event links the order's dashboard page, so an order made
+	 * before the plugin linked it (by 0.3.0) gets it from its next event.
 	 */
-	public function test_an_order_without_a_kept_dashboard_link_gets_notes_without_one() {
+	public function test_an_order_from_before_the_links_gets_them_from_its_next_event() {
 		$order = self::order_paying( 'mko_old' );
-		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_old', 'store' => array( 'id' => 'store-1', 'name' => 'Bakery' ) ) ) );
-		$notes = self::notes( wc_get_order( $order->get_id() ) );
-		$this->assertStringContainsString( 'Monokulo: paid in full.', $notes );
-		$this->assertStringNotContainsString( 'In Monokulo', $notes );
+		$this->deliver( self::event( array( 'event' => 'order.confirming', 'order_id' => 'mko_old' ) ) );
+		$this->assertStringContainsString( 'In Monokulo: https://pay.example.com/stores/store-1/orders/mko_old', self::notes( wc_get_order( $order->get_id() ) ) );
+	}
+
+	/**
+	 * A delivery whose dashboard link is missing, or isn't a web address,
+	 * still says what happened, with no link.
+	 */
+	public function test_an_event_without_a_dashboard_link_gets_a_note_without_one() {
+		foreach ( array( 'none' => array(), 'not a web address' => array( 'mk:dashboard-order' => array( 'href' => 'javascript:alert(1)' ) ) ) as $case => $links ) {
+			$order = self::order_paying( 'mko_bare_' . md5( $case ) );
+			$this->deliver(
+				self::event(
+					array(
+						'event'    => 'order.paid',
+						'order_id' => 'mko_bare_' . md5( $case ),
+						'_links'   => $links,
+					)
+				)
+			);
+			$notes = self::notes( wc_get_order( $order->get_id() ) );
+			$this->assertStringContainsString( 'Monokulo: paid in full.', $notes, $case );
+			$this->assertStringNotContainsString( 'In Monokulo', $notes, $case );
+		}
 	}
 
 	/**
@@ -144,7 +178,7 @@ class WebhookTest extends MonokuloTestCase {
 	 * leaves a paid order paid and says so.
 	 */
 	public function test_a_paid_order_stays_paid() {
-		foreach ( array( 'order.expired', 'order.partial', 'order.pending', 'order.confirming' ) as $event ) {
+		foreach ( array( 'order.expired', 'order.cancelled', 'order.partial', 'order.pending', 'order.confirming' ) as $event ) {
 			$order = self::order_paying( 'mko_kept_' . $event, 'processing' );
 			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_kept_' . $event ) ) ), $event );
 			$order = wc_get_order( $order->get_id() );
@@ -170,7 +204,7 @@ class WebhookTest extends MonokuloTestCase {
 	 * never move the order.
 	 */
 	public function test_an_older_payment_requests_other_events_only_add_a_note() {
-		foreach ( array( 'order.expired', 'order.partial', 'order.pending', 'order.unconfirmed', 'order.confirming' ) as $event ) {
+		foreach ( array( 'order.expired', 'order.cancelled', 'order.partial', 'order.pending', 'order.unconfirmed', 'order.confirming' ) as $event ) {
 			$order = self::order_with_an_older_request( 'mko_old_' . $event, 'mko_new_' . $event );
 			$this->assertSame( 200, $this->deliver( self::event( array( 'event' => $event, 'order_id' => 'mko_old_' . $event ) ) ), $event );
 			$order = wc_get_order( $order->get_id() );
@@ -222,7 +256,7 @@ class WebhookTest extends MonokuloTestCase {
 		$order = self::order_with_an_older_request( 'mko_was', 'mko_is' );
 		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_was' ) ) );
 		foreach ( array( 'mko_was', 'mko_is' ) as $monokulo_order ) {
-			foreach ( array( 'order.expired', 'order.pending', 'order.partial' ) as $event ) {
+			foreach ( array( 'order.expired', 'order.cancelled', 'order.pending', 'order.partial' ) as $event ) {
 				$this->deliver( self::event( array( 'event' => $event, 'order_id' => $monokulo_order ) ) );
 				$this->assertTrue( wc_get_order( $order->get_id() )->is_paid(), "$event for $monokulo_order" );
 			}

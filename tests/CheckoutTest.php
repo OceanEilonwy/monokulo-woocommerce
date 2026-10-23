@@ -57,8 +57,9 @@ class CheckoutTest extends MonokuloTestCase {
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'order_deadbeef', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
 		$this->assertSame( 'pending', $order->get_status(), 'Not paid until Monokulo says so.' );
-		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/checkout/order_deadbeef In Monokulo: https://pay.example.com/stores/store-1/orders/order_deadbeef', self::notes( $order ) );
-		$this->assertSame( '{"order_deadbeef":"https:\\/\\/pay.example.com\\/stores\\/store-1\\/orders\\/order_deadbeef"}', $order->get_meta( WC_Gateway_Monokulo::META_DASHBOARD_LINKS ), 'The dashboard page Monokulo linked, kept with the order.' );
+		$notes = self::notes( $order );
+		$this->assertStringContainsString( 'sent to pay here: https://pay.example.com/checkout/order_deadbeef', $notes );
+		$this->assertStringNotContainsString( 'In Monokulo', $notes, 'The dashboard page comes with each webhook, not from here.' );
 	}
 
 	/**
@@ -79,7 +80,6 @@ class CheckoutTest extends MonokuloTestCase {
 
 		$this->assertSame( array( $api, 'https://example.com/monokulo/api/v1/orders' ), wp_list_pluck( $this->sent, 'url' ) );
 		$this->assertSame( 'https://example.com/monokulo/checkout/order_p', $result['redirect'] );
-		$this->assertStringContainsString( 'In Monokulo: https://example.com/monokulo/stores/store-1/orders/order_p', self::notes( wc_get_order( $order->get_id() ) ) );
 	}
 
 	/**
@@ -395,6 +395,8 @@ class CheckoutTest extends MonokuloTestCase {
 			'HTTP 401'          => array( array( $create => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'No valid key: detail 401 (https://docs.monokulo.com/problems/unauthorized)' ),
 			'HTTP 403'          => array( array( $create => $problem( 403, 'forbidden', 'Not allowed with this key', 'detail 403' ) ), 'not available for this store', 'Not allowed with this key' ),
 			'HTTP 429'          => array( array( $create => $problem( 429, 'rate-limited', 'Too many requests', 'detail 429' ) ), 'busy right now', 'rate limited' ),
+			'no rate'           => array( array( $create => $problem( 503, 'rates-unavailable', 'No exchange rate right now', 'detail 503' ) ), 'try again shortly', 'no exchange rate for the order\'s currency right now' ),
+			'engine away'       => array( array( $create => $problem( 503, 'engine-unavailable', 'The payment engine is unavailable', 'detail 503' ) ), 'try again shortly', 'payment engine is busy or unreachable' ),
 			'invalid amount'    => array( array( $create => $problem( 400, 'invalid-amount', 'The order can\'t be priced', 'unsupported currency: USD' ) ), 'cannot be priced', 'unsupported currency: USD' ),
 			'conflict'          => array( array( $create => $problem( 409, 'idempotency-conflict', 'Key used for another order', 'detail 409' ) ), 'could not be started', 'Key used for another order' ),
 			'not json'          => array( array( $create => self::response( 201, '<html>Checking your browser</html>' ) ), 'could not be started', 'Checking your browser' ),
@@ -414,6 +416,39 @@ class CheckoutTest extends MonokuloTestCase {
 			}
 			$this->assertTrue( $this->logged( $merchant ), $case . ': ' . wp_json_encode( $this->logged ) );
 			$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ), $case );
+		}
+	}
+
+	/**
+	 * Monokulo had no exchange rate, or its engine was away: no order was
+	 * made. The customer is asked to try again shortly, the merchant's log
+	 * says how long Monokulo asked to wait, and placing the order again
+	 * sends the same idempotency key, so it can only ever make one order.
+	 */
+	public function test_an_order_monokulo_cannot_make_yet_is_tried_again_with_the_same_key() {
+		foreach ( array( 'rates-unavailable' => array( 'retry-after' => '30' ), 'engine-unavailable' => array() ) as $name => $headers ) {
+			$this->logged = array();
+			$this->sent   = array();
+			$order        = self::order();
+			$problem      = Monokulo_Api_Fixtures::problem( 503, $name, 'Not right now', 'Try again in a moment.' ) + ( $headers ? array( 'retry_after' => 30 ) : array() );
+			$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 503, $problem, $headers ) ) );
+			try {
+				self::connected_gateway()->process_payment( $order->get_id() );
+				$this->fail( "$name should have thrown." );
+			} catch ( Exception $e ) {
+				$this->assertSame( 'Monero payments are unavailable for a moment. Please try again shortly.', $e->getMessage(), $name );
+			}
+			$this->assertSame( $headers ? true : false, $this->logged( '(retry after 30 s)' ), $name . ': ' . wp_json_encode( $this->logged ) );
+			$this->assertTrue( $this->logged( 'No order was made' ), $name );
+			$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ), $name );
+
+			$this->monokulo_serves();
+			$result = self::connected_gateway()->process_payment( $order->get_id() );
+			$this->assertSame( 'https://pay.example.com/checkout/order_1', $result['redirect'], $name );
+			$keys = array_map( static fn( $sent ) => json_decode( $sent['args']['body'], true )['idempotency_key'], $this->sent_to( self::ORDERS ) );
+			$this->assertCount( 2, $keys, $name );
+			$this->assertSame( 'wc:' . $order->get_id() . ':42.5:USD', $keys[0], $name );
+			$this->assertSame( $keys[0], $keys[1], $name . ': the same key both times' );
 		}
 	}
 

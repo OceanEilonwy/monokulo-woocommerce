@@ -60,8 +60,8 @@ connecting again: its keys and API entry are the same.
   checkout straight away: each order carries its own.
 - The settings page shows Monokulo's onion address only after you
   **Connect again**.
-- Orders made before the update have no link to their page in Monokulo's
-  dashboard, so their later notes have none either; new orders have it.
+- Orders made before the update get the link to their page in Monokulo's
+  dashboard with their next event: every webhook carries it.
 
 Shops connected by a version older than 0.3.0 connect again.
 
@@ -102,8 +102,13 @@ order is usually one request. When Monokulo refuses an order, the customer
 gets a short message and the log gets Monokulo's problem: its title, what
 went wrong, and the problem's page.
 
-The order's first note links its page on your Monokulo dashboard, as
-Monokulo links it.
+When Monokulo can't make the order just now (`rates-unavailable`: no
+exchange rate for the currency, its rate providers being down; or
+`engine-unavailable`: its payment engine is busy), no order was made: the
+customer is asked to try again shortly, and the log says so, with how long
+Monokulo asked to wait. Placing the order again sends the same
+idempotency key (the order, its total and currency), so it can never make
+two Monokulo orders for one.
 
 ### Customers on Tor
 
@@ -141,12 +146,13 @@ before changes nothing.
 | `order.paid` | Paid (`payment_complete()`: Processing, or Completed for virtual and downloadable orders), with the Monokulo order as its transaction ID |
 | `order.overpaid` | Paid, and a note that the excess isn't refunded automatically |
 | `order.expired` | Cancelled, and a note: any funds received stay at the address |
+| `order.cancelled` | As `order.expired` (Monokulo only cancels its POS's own orders, never the shop's) |
 | `order.pending` | Pending: a double-spend voided every payment |
 | `order.double_spend_detected` | A fraud alert note; any status change comes as its own event |
 | `order.double_spend_reversed` | A note |
 
 Every event adds a note to the order, with a link to the order in your
-Monokulo's dashboard. A WooCommerce order can have several Monokulo orders: paying
+Monokulo's dashboard (the webhook's `mk:dashboard-order` link). A WooCommerce order can have several Monokulo orders: paying
 again after its total changed sends the customer to a new one. The plugin
 remembers them all, and Monokulo keeps watching them all:
 
