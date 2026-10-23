@@ -163,7 +163,12 @@ class ConnectTest extends MonokuloTestCase {
 		$this->assertTrue( $gateway->is_available() );
 		$this->assertSame( '', $gateway->get_option( 'onion_api' ) );
 
-		$this->monokulo_serves( array( 'POST https://pay.example.com/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_1', '', true ) ) ) );
+		$this->monokulo_serves(
+			array(
+				'GET ' . self::API                          => self::entry_response( Monokulo_Api_Fixtures::entry( '', true ) ),
+				'POST https://pay.example.com/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'order_1', '', true ) ),
+			)
+		);
 		$this->assertSame( 'https://pay.example.com/checkout/order_1', $gateway->process_payment( self::order()->get_id() )['redirect'] );
 		$_SERVER['HTTP_HOST'] = 'shop.onion';
 		$this->assertSame( Monokulo_Api_Fixtures::ONION . '/checkout/order_1', $gateway->process_payment( self::order()->get_id() )['redirect'] );

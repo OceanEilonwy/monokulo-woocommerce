@@ -329,12 +329,16 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			throw new Exception( esc_html__( 'Your order could not be found. Please start the checkout again.', 'monokulo' ) );
 		}
 
+		$on_tor = self::customer_on_tor();
+		if ( $on_tor && $this->has_credentials() && ! $this->has_onion_address() ) {
+			$this->refuse_tor( sprintf( 'for order %d', $order->get_id() ) );
+		}
+
 		$made     = $this->create_monokulo_order( $order );
 		$checkout = $made['checkout'];
-		if ( self::customer_on_tor() ) {
+		if ( $on_tor ) {
 			if ( null === $made['onion_checkout'] ) {
-				$this->log( sprintf( 'A customer on the shop\'s onion address could not be sent to pay Monokulo order %s: the Monokulo has no onion address (its operator can turn on Tor), and a customer on Tor is never sent to its web address.', $made['order_id'] ), 'error' );
-				throw new Exception( esc_html__( 'Monero payments cannot be made over Tor at this store right now. Please contact the store owner.', 'monokulo' ) );
+				$this->refuse_tor( 'to pay Monokulo order ' . $made['order_id'] );
 			}
 			$checkout = $made['onion_checkout'];
 		}
@@ -360,6 +364,40 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'result'   => 'success',
 			'redirect' => $checkout,
 		);
+	}
+
+	/**
+	 * Whether the Monokulo has an onion address: its entry links
+	 * `mk:onion-api` only then. A kept entry without it is revalidated
+	 * first (`If-None-Match`), so a Monokulo that has just gained one
+	 * isn't taken for one without it until the copy expires.
+	 *
+	 * @throws Exception When the entry can't be read.
+	 */
+	private function has_onion_address(): bool {
+		$this->entry_read_now = false;
+		if ( isset( $this->entry()['_links']['mk:onion-api'] ) ) {
+			return true;
+		}
+		if ( $this->entry_read_now ) {
+			return false;
+		}
+		$kept            = get_option( self::ENTRY_OPTION );
+		$kept['expires'] = 0;
+		update_option( self::ENTRY_OPTION, $kept, false );
+		return isset( $this->entry()['_links']['mk:onion-api'] );
+	}
+
+	/**
+	 * Tells a customer on Tor that Monero can't be paid over it here, and
+	 * the merchant why. They are never sent to Monokulo's web address.
+	 *
+	 * @param string $what What they couldn't be sent to pay (for the log).
+	 * @throws Exception Always.
+	 */
+	private function refuse_tor( string $what ): void {
+		$this->log( sprintf( 'A customer on the shop\'s onion address could not be sent %s: the Monokulo has no onion address (its operator can turn on Tor), and a customer on Tor is never sent to its web address.', $what ), 'error' );
+		throw new Exception( esc_html__( 'Monero payments cannot be made over Tor at this store right now. Please contact the store owner.', 'monokulo' ) );
 	}
 
 	/**

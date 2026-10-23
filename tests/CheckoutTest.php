@@ -88,7 +88,12 @@ class CheckoutTest extends MonokuloTestCase {
 	 * though the shop's server called Monokulo on its web address.
 	 */
 	public function test_a_customer_on_tor_is_sent_to_the_onion_checkout() {
-		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 201, Monokulo_Api_Fixtures::order( 'order_tor', '', true ) ) ) );
+		$this->monokulo_serves(
+			array(
+				'GET ' . self::API     => self::entry_response( Monokulo_Api_Fixtures::entry( '', true ) ),
+				'POST ' . self::ORDERS => self::response( 201, Monokulo_Api_Fixtures::order( 'order_tor', '', true ) ),
+			)
+		);
 		$gateway = self::connected_gateway();
 
 		$_SERVER['HTTP_HOST'] = 'shopabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion';
@@ -108,22 +113,61 @@ class CheckoutTest extends MonokuloTestCase {
 	}
 
 	/**
-	 * Without an onion address the order has no `mk:onion-checkout`: a
-	 * customer on Tor is told, never sent to the web, and the merchant's
-	 * log says why.
+	 * Pays as a customer on Tor; returns the message they were refused with.
+	 *
+	 * @param WC_Gateway_Monokulo $gateway The gateway.
+	 * @param WC_Order            $order   The order.
+	 */
+	private function refused_on_tor( WC_Gateway_Monokulo $gateway, WC_Order $order ): string {
+		try {
+			$gateway->process_payment( $order->get_id() );
+		} catch ( Exception $e ) {
+			$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+			$this->assertTrue( $this->logged( 'the Monokulo has no onion address' ) );
+			return $e->getMessage();
+		}
+		$this->fail( 'A customer on Tor must not be sent to the web checkout.' );
+	}
+
+	/**
+	 * Without an onion address the entry has no `mk:onion-api`: a customer
+	 * on Tor is told, never sent to the web, and no order is made (it would
+	 * only expire). The merchant's log says why.
 	 */
 	public function test_a_customer_on_tor_is_never_sent_to_the_web() {
 		$this->monokulo_serves();
 		$_SERVER['HTTP_HOST'] = 'shop.onion';
-		$order                = self::order();
-		try {
-			self::connected_gateway()->process_payment( $order->get_id() );
-			$this->fail( 'A customer on Tor must not be sent to the web checkout.' );
-		} catch ( Exception $e ) {
-			$this->assertStringContainsString( 'cannot be made over Tor', $e->getMessage() );
-		}
-		$this->assertTrue( $this->logged( 'the Monokulo has no onion address' ) );
-		$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+		$this->assertStringContainsString( 'cannot be made over Tor', $this->refused_on_tor( self::connected_gateway(), self::order() ) );
+		$this->assertSame( array( self::API ), wp_list_pluck( $this->sent, 'url' ), 'No order is made.' );
+	}
+
+	/**
+	 * Before refusing, a kept entry without `mk:onion-api` is checked with
+	 * Monokulo (`If-None-Match`): still the same (`304`), the customer is
+	 * refused with no order made; a Monokulo that has just gained an onion
+	 * address sends them to its onion checkout.
+	 */
+	public function test_a_kept_entry_without_an_onion_address_is_checked_before_refusing() {
+		$this->monokulo_serves();
+		$gateway = self::connected_gateway();
+		$gateway->process_payment( self::order()->get_id() );
+
+		$_SERVER['HTTP_HOST'] = 'shop.onion';
+		$this->sent           = array();
+		$this->monokulo_serves( array( 'GET ' . self::API => static fn( array $args ) => '"e1"' === ( $args['headers']['If-None-Match'] ?? '' ) ? self::response( 304, '', array( 'cache-control' => 'private, max-age=3600' ) ) : self::response( 500 ) ) );
+		$this->refused_on_tor( $gateway, self::order() );
+		$this->assertSame( array( self::API ), wp_list_pluck( $this->sent, 'url' ), 'Revalidated, and no order made.' );
+
+		$this->sent = array();
+		$this->monokulo_serves(
+			array(
+				'GET ' . self::API     => self::entry_response( Monokulo_Api_Fixtures::entry( '', true ), 3600, '"e2"' ),
+				'POST ' . self::ORDERS => self::response( 201, Monokulo_Api_Fixtures::order( 'order_tor', '', true ) ),
+			)
+		);
+		$result = $gateway->process_payment( self::order()->get_id() );
+		$this->assertSame( Monokulo_Api_Fixtures::ONION . '/checkout/order_tor', $result['redirect'] );
+		$this->assertSame( array( self::API, self::ORDERS ), wp_list_pluck( $this->sent, 'url' ) );
 	}
 
 	public function test_the_entry_is_read_once_and_kept() {

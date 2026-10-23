@@ -110,9 +110,11 @@ Monokulo links it.
 A customer who reached the shop on its own `.onion` address stays on Tor:
 the plugin sends them to the order's checkout on your Monokulo's onion
 address, though the shop's server talks to Monokulo on its web address.
-If your Monokulo has no onion address, such a customer is told Monero
-can't be paid over Tor right now (never sent to the web), and the log
-says why: ask your Monokulo's operator to turn Tor on.
+If your Monokulo has no onion address (its API entry says so, checked
+again with Monokulo before refusing), such a customer is told Monero can't
+be paid over Tor right now, with no order made in Monokulo and never sent
+to the web, and the log says why: ask your Monokulo's operator to turn
+Tor on.
 
 The amount is sent in the currency's own decimals, trailing zeros
 trimmed: `42.5` for EUR 42.50, `1500` for JPY 1,500.
