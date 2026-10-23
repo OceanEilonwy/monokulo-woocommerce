@@ -10,7 +10,7 @@ use PHPUnit\Framework\TestCase;
  *
  * 1. the merchant signs up to Monokulo and adds a watch-only wallet;
  * 2. in WordPress, WooCommerce > Settings > Payments > Monokulo, types
- *    this Monokulo's address in place of monokulo.com, saves, and presses
+ *    this Monokulo's address in place of www.monokulo.com, saves, and presses
  *    Connect;
  * 3. on Monokulo, sets up the store for the shop, picks the wallet, and
  *    goes back to WooCommerce, which redeems the token: connected;
@@ -94,7 +94,7 @@ final class MonokuloSmokeTest extends TestCase {
 		// The Monokulo address starts at the public Monokulo; this shop's is the one on this machine.
 		$settings = $this->browser->get($settingsUrl);
 		$this->assertSame(200, $settings->status, $settings->text());
-		$this->assertSame('https://monokulo.com', $settings->form('')['fields']['woocommerce_monokulo_address'] ?? null);
+		$this->assertSame('https://www.monokulo.com', $settings->form('')['fields']['woocommerce_monokulo_address'] ?? null);
 		// The settings form posts back to its own page (action=""), query string and all.
 		$this->browser->post($settingsUrl, ['woocommerce_monokulo_address' => $this->monokulo . '/', 'save' => 'Save changes'] + $settings->form('')['fields']);
 

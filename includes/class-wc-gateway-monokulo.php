@@ -44,7 +44,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	/**
 	 * Where the "Monokulo address" setting starts: the public Monokulo.
 	 */
-	const DEFAULT_MONOKULO_ADDRESS = 'https://monokulo.com';
+	const DEFAULT_MONOKULO_ADDRESS = 'https://www.monokulo.com';
 
 	/**
 	 * The connect path's slug: `/plugins/connect/woocommerce`.
@@ -225,7 +225,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'address'        => array(
 				'title'       => __( 'Monokulo address', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'Where your Monokulo is, as your browser opens it: https://monokulo.com, or your own Monokulo\'s address. Save it before you Connect.', 'monokulo' ),
+				'description' => __( 'Where your Monokulo is, as your browser opens it: https://www.monokulo.com, or your own Monokulo\'s address. Save it before you Connect.', 'monokulo' ),
 				'default'     => self::DEFAULT_MONOKULO_ADDRESS,
 				'placeholder' => self::DEFAULT_MONOKULO_ADDRESS,
 				'desc_tip'    => true,
@@ -529,7 +529,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$address = self::clean_address( (string) $value );
 		if ( null === $address ) {
 			if ( class_exists( 'WC_Admin_Settings' ) ) {
-				WC_Admin_Settings::add_error( __( 'Enter an http or https address for your Monokulo, such as https://monokulo.com.', 'monokulo' ) );
+				WC_Admin_Settings::add_error( __( 'Enter an http or https address for your Monokulo, such as https://www.monokulo.com.', 'monokulo' ) );
 			}
 			return (string) $this->get_option( $key );
 		}

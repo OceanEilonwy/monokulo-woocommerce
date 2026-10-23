@@ -177,10 +177,10 @@ class ConnectTest extends MonokuloTestCase {
 		$this->assertSame( 'pk_existing', ( new WC_Gateway_Monokulo() )->get_option( 'public_key' ) );
 	}
 
-	public function test_connect_goes_to_monokulo_com_until_another_address_is_saved() {
+	public function test_connect_goes_to_www_monokulo_com_until_another_address_is_saved() {
 		delete_option( 'woocommerce_monokulo_settings' );
 		list( $html ) = $this->render_connect();
-		$this->assertStringContainsString( 'https://monokulo.com/plugins/connect/woocommerce?', $html );
+		$this->assertStringContainsString( 'https://www.monokulo.com/plugins/connect/woocommerce?', $html );
 	}
 
 	public function test_the_monokulo_address_is_cleaned_or_refused_on_save() {
