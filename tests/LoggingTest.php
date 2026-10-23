@@ -42,18 +42,20 @@ class LoggingTest extends MonokuloTestCase {
 	}
 
 	public function test_warnings_go_to_monokulo_only_when_the_merchant_turned_that_on() {
-		$this->monokulo_answers( self::response( 204 ) );
+		$this->monokulo_serves();
 		$logs = 'https://pay.example.com/api/v1/logs';
 
-		self::connected_gateway()->process_webhook( '{}', 'bad' );
-		WC_Gateway_Monokulo::flush_forwarded( $logs, 'sk_test' );
+		$gateway = self::connected_gateway();
+		$gateway->process_webhook( '{}', 'bad' );
+		$gateway->flush_forwarded();
 		$this->assertSame( array(), $this->sent, 'Off by default.' );
 
-		self::connected_gateway( array( 'forward_errors' => 'yes' ) )->process_webhook( '{}', 'bad' );
-		WC_Gateway_Monokulo::flush_forwarded( $logs, 'sk_test' );
-		$this->assertCount( 1, $this->sent );
-		$sent = $this->sent[0];
-		$this->assertSame( $logs, $sent['url'] );
+		$gateway = self::connected_gateway( array( 'forward_errors' => 'yes' ) );
+		$gateway->process_webhook( '{}', 'bad' );
+		$gateway->flush_forwarded();
+		$this->assertSame( array( self::API, $logs ), wp_list_pluck( $this->sent, 'url' ), 'The entry\'s send-logs form.' );
+		$sent = $this->sent[1];
+		$this->assertSame( 'POST', $sent['args']['method'] );
 		$this->assertSame( 'Bearer sk_test', $sent['args']['headers']['Authorization'] );
 		$this->assertSame( WC_Gateway_Monokulo::CLIENT, $sent['args']['headers']['Monokulo-Client'] );
 		$this->assertFalse( $sent['args']['blocking'], 'No page waits for it.' );
@@ -62,17 +64,55 @@ class LoggingTest extends MonokuloTestCase {
 		$this->assertStringContainsString( 'Webhook refused', $entry['message'] );
 		$this->assertSame( WC_Gateway_Monokulo::trace_id(), $entry['trace_id'] );
 
-		WC_Gateway_Monokulo::flush_forwarded( $logs, 'sk_test' );
-		$this->assertCount( 1, $this->sent, 'Sent once.' );
+		$gateway->flush_forwarded();
+		$this->assertCount( 2, $this->sent, 'Sent once.' );
+
+		$gateway->process_webhook( '{}', 'bad' );
+		$gateway->flush_forwarded();
+		$this->assertSame( array( self::API, $logs, $logs ), wp_list_pluck( $this->sent, 'url' ), 'The kept entry: no call to read it again.' );
 	}
 
-	public function test_warnings_go_to_the_apis_logs() {
-		$logs_url = new ReflectionMethod( WC_Gateway_Monokulo::class, 'logs_url' );
-		$this->assertSame( 'https://pay.example.com/api/v1/logs', $logs_url->invoke( self::connected_gateway() ), 'Without a link, beside the entry.' );
+	/**
+	 * Logs go where the entry's form points, under any path Monokulo is
+	 * served at: the plugin builds no address for them.
+	 */
+	public function test_warnings_go_where_the_send_logs_form_points() {
+		$api   = 'https://example.com/monokulo/api/v1';
+		$entry = Monokulo_Api_Fixtures::entry( '/monokulo' );
+		$entry['_templates']['send-logs']['target'] = '/monokulo/reports';
+		$this->monokulo_serves( array( 'GET ' . $api => self::entry_response( $entry ) ) );
+		$gateway = self::connected_gateway(
+			array(
+				'api'            => $api,
+				'forward_errors' => 'yes',
+			)
+		);
+		$gateway->process_webhook( '{}', 'bad' );
+		$gateway->flush_forwarded();
+		$this->assertSame( array( $api, 'https://example.com/monokulo/reports' ), wp_list_pluck( $this->sent, 'url' ) );
+	}
 
-		$entry                      = Monokulo_Api_Fixtures::entry();
-		$entry['_links']['mk:logs'] = array( 'href' => '/reports' );
-		set_transient( 'monokulo_entry_' . md5( self::API . "\nsk_test" ), $entry );
-		$this->assertSame( 'https://pay.example.com/reports', $logs_url->invoke( self::connected_gateway() ), 'Where the entry links them.' );
+	/**
+	 * With no `send-logs` form for the key, or no Monokulo to read the
+	 * entry from, the entries stay in WooCommerce's log only, and what
+	 * that logs isn't sent either.
+	 */
+	public function test_warnings_that_cannot_be_sent_stay_in_the_shops_log() {
+		$bare = Monokulo_Api_Fixtures::entry();
+		unset( $bare['_templates']['send-logs'] );
+		foreach ( array(
+			'no form'     => self::entry_response( $bare ),
+			'unreachable' => new WP_Error( 'http_request_failed', 'cURL error 7' ),
+		) as $case => $answer ) {
+			delete_option( WC_Gateway_Monokulo::ENTRY_OPTION );
+			$this->sent = array();
+			$this->monokulo_serves( array( 'GET ' . self::API => $answer ) );
+			$gateway = self::connected_gateway( array( 'forward_errors' => 'yes' ) );
+			$gateway->process_webhook( '{}', 'bad' );
+			$gateway->flush_forwarded();
+			$gateway->flush_forwarded();
+			$this->assertSame( array( self::API ), wp_list_pluck( $this->sent, 'url' ), $case );
+			$this->assertSame( 3, $this->sent[0]['args']['timeout'], $case . ': read briefly.' );
+		}
 	}
 }

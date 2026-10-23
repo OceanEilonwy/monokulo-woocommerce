@@ -105,20 +105,38 @@ class WebhookTest extends MonokuloTestCase {
 		}
 	}
 
+	/**
+	 * The note links the order's page on the merchant's dashboard, as
+	 * Monokulo linked it when the order was made (`mk:dashboard-order`),
+	 * under any path Monokulo is served at.
+	 */
 	public function test_a_paid_order_records_the_monokulo_order_and_links_to_it() {
-		$order = self::order_paying( 'mko_linked' );
-		$this->deliver(
-			self::event(
-				array(
-					'event'    => 'order.paid',
-					'order_id' => 'mko_linked',
-					'store'    => array( 'id' => 'store-1', 'name' => 'Bakery' ),
-				)
+		$api = 'https://example.com/monokulo/api/v1';
+		$this->monokulo_serves(
+			array(
+				'GET ' . $api                                     => self::entry_response( Monokulo_Api_Fixtures::entry( '/monokulo' ) ),
+				'POST https://example.com/monokulo/api/v1/orders' => self::response( 201, Monokulo_Api_Fixtures::order( 'mko_linked', '/monokulo' ) ),
 			)
 		);
+		$order = self::order();
+		self::connected_gateway( array( 'api' => $api ) )->process_payment( $order->get_id() );
+
+		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_linked', 'store' => array( 'id' => 'store-1', 'name' => 'Bakery' ) ) ) );
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'mko_linked', $order->get_transaction_id() );
-		$this->assertStringContainsString( 'In Monokulo: https://pay.example.com/stores/store-1/orders/mko_linked', self::notes( $order ) );
+		$this->assertStringContainsString( 'Monokulo: paid in full. In Monokulo: https://example.com/monokulo/stores/store-1/orders/mko_linked', self::notes( $order ) );
+	}
+
+	/**
+	 * An order made before Monokulo linked its dashboard page (by 0.3.0)
+	 * has none kept: its notes say what happened, with no link.
+	 */
+	public function test_an_order_without_a_kept_dashboard_link_gets_notes_without_one() {
+		$order = self::order_paying( 'mko_old' );
+		$this->deliver( self::event( array( 'event' => 'order.paid', 'order_id' => 'mko_old', 'store' => array( 'id' => 'store-1', 'name' => 'Bakery' ) ) ) );
+		$notes = self::notes( wc_get_order( $order->get_id() ) );
+		$this->assertStringContainsString( 'Monokulo: paid in full.', $notes );
+		$this->assertStringNotContainsString( 'In Monokulo', $notes );
 	}
 
 	/**

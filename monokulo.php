@@ -3,7 +3,7 @@
  * Plugin Name:          Monokulo for WooCommerce
  * Plugin URI:           https://github.com/OceanEilonwy/monokulo-woocommerce
  * Description:          Take Monero at checkout through Monokulo, a non-custodial Monero payment processor that only ever holds a view key.
- * Version:              0.3.0
+ * Version:              0.4.0
  * Requires at least:    6.5
  * Requires PHP:         8.1
  * Requires Plugins:     woocommerce
