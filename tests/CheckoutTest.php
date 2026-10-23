@@ -36,12 +36,12 @@ class CheckoutTest extends MonokuloTestCase {
 		$this->assertSame( 'application/json', $sent['args']['headers']['Content-Type'] );
 		$this->assertSame(
 			array(
-				'amount'                 => '42.50',
+				'amount'                 => '42.5',
 				'currency'               => 'USD',
 				'merchant_order_id'      => (string) $order->get_id(),
 				'show_merchant_order_id' => false,
 				'description'            => 'Order #' . $order->get_order_number(),
-				'idempotency_key'        => 'wc:' . $order->get_id() . ':42.50:USD',
+				'idempotency_key'        => 'wc:' . $order->get_id() . ':42.5:USD',
 			),
 			json_decode( $sent['args']['body'], true )
 		);
@@ -111,7 +111,7 @@ class CheckoutTest extends MonokuloTestCase {
 		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::created( 'order_second' ) ) );
 		$gateway->process_payment( $order->get_id() );
 
-		$this->assertStringEndsWith( ':50.00:USD', json_decode( end( $this->sent )['args']['body'], true )['idempotency_key'] );
+		$this->assertStringEndsWith( ':50:USD', json_decode( end( $this->sent )['args']['body'], true )['idempotency_key'] );
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'order_second', $order->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
 		$this->assertSame( array( 'order_first', 'order_second' ), array_values( wp_list_pluck( $order->get_meta( WC_Gateway_Monokulo::META_ORDER_IDS, false ), 'value' ) ) );
@@ -128,11 +128,36 @@ class CheckoutTest extends MonokuloTestCase {
 		$this->assertStringEndsWith( 'é…', $description );
 	}
 
-	public function test_amounts_are_plain_decimals() {
-		$this->assertSame( '42.50', WC_Gateway_Monokulo::format_amount( 42.5, 'USD' ) );
-		$this->assertSame( '1234567.00', WC_Gateway_Monokulo::format_amount( 1234567, 'EUR' ) );
-		update_option( 'woocommerce_price_num_decimals', 6 );
+	/**
+	 * In the currency's own decimals, trailing zeros trimmed: Monokulo
+	 * refuses more than a fiat currency's two.
+	 */
+	public function test_amounts_are_in_the_currencys_own_decimals_trimmed() {
+		$this->assertSame( '42.5', WC_Gateway_Monokulo::format_amount( 42.5, 'USD' ) );
+		$this->assertSame( '42.55', WC_Gateway_Monokulo::format_amount( 42.549999, 'EUR' ) );
+		$this->assertSame( '1234567', WC_Gateway_Monokulo::format_amount( 1234567, 'EUR' ) );
+		$this->assertSame( '0.1', WC_Gateway_Monokulo::format_amount( 0.1, 'GBP' ) );
+		$this->assertSame( '0', WC_Gateway_Monokulo::format_amount( 0, 'EUR' ) );
+		$this->assertSame( '1500', WC_Gateway_Monokulo::format_amount( 1500, 'JPY' ) );
+		$this->assertSame( '1501', WC_Gateway_Monokulo::format_amount( 1500.6, 'jpy' ) );
+		$this->assertSame( '12.345', WC_Gateway_Monokulo::format_amount( 12.345, 'KWD' ) );
+		$this->assertSame( '12.3', WC_Gateway_Monokulo::format_amount( 12.3, 'KWD' ) );
 		$this->assertSame( '0.123456', WC_Gateway_Monokulo::format_amount( 0.123456, 'xmr' ) );
+		$this->assertSame( '0.000000000001', WC_Gateway_Monokulo::format_amount( 0.000000000001, 'XMR' ) );
+		update_option( 'woocommerce_price_num_decimals', 8 );
+		$this->assertSame( '42.5', WC_Gateway_Monokulo::format_amount( 42.5, 'USD' ), 'Never padded to the shop\'s price decimals.' );
+	}
+
+	public function test_a_yen_order_is_sent_in_whole_yen() {
+		$order = self::order();
+		$order->set_currency( 'JPY' );
+		$order->set_total( '1500' );
+		$order->save();
+		$this->monokulo_serves();
+		self::connected_gateway()->process_payment( $order->get_id() );
+		$sent = json_decode( $this->sent_to( self::ORDERS )[0]['args']['body'], true );
+		$this->assertSame( '1500', $sent['amount'] );
+		$this->assertSame( 'wc:' . $order->get_id() . ':1500:JPY', $sent['idempotency_key'] );
 	}
 
 	public function test_a_store_without_a_whole_connection_calls_nothing() {
