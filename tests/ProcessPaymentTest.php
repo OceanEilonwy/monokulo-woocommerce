@@ -86,8 +86,7 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 
 	/**
 	 * Builds a `WC_Gateway_Monokulo` connected the way the current connect
-	 * flow leaves it (`endpoint`, `public_key`, `secret_token` and
-	 * `connection_version`) - `update_option()` persists to
+	 * flow leaves it (`endpoint`, `public_key` and `secret_token`) - `update_option()` persists to
 	 * `wp_options` immediately (`WC_Settings_API::update_option()`, checked
 	 * directly), so a *second*, freshly-constructed gateway object picks the
 	 * values back up through its own constructor's normal
@@ -96,17 +95,14 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 	 *
 	 * @param string $endpoint   Monokulo's public address to configure.
 	 * @param string $public_key The store public key to configure.
-	 * @param string $version    The stored `connection_version` ('' for an
-	 *                           install connected by an older plugin).
 	 * @return WC_Gateway_Monokulo
 	 */
-	private function create_configured_gateway( $endpoint = 'http://monokulo.test', $public_key = 'pk_test_abc123', $version = WC_Gateway_Monokulo::CONNECTION_VERSION ) {
+	private function create_configured_gateway( $endpoint = 'http://monokulo.test', $public_key = 'pk_test_abc123' ) {
 		$seed = new WC_Gateway_Monokulo();
 		$seed->update_option( 'enabled', 'yes' );
 		$seed->update_option( 'endpoint', $endpoint );
 		$seed->update_option( 'public_key', $public_key );
 		$seed->update_option( 'secret_token', 'sk_test_secret' );
-		$seed->update_option( 'connection_version', $version );
 
 		return new WC_Gateway_Monokulo();
 	}
@@ -454,49 +450,21 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * An install connected by an older plugin version (credentials, but no
-	 * `connection_version`) holds the engine's address, which no longer
-	 * takes orders. It must be hidden at checkout, refuse orders without
-	 * calling anything, and show the reconnect notice - recognised by the
-	 * missing marker, never by the URL.
+	 * A store missing any part of its connection is not offered at
+	 * checkout, and an order sent anyway calls nothing.
 	 */
-	public function test_an_install_connected_before_this_version_must_reconnect() {
-		$gateway = $this->create_configured_gateway( 'http://monokulo.test', 'pk_test_abc123', '' );
+	public function test_a_store_without_a_whole_connection_is_hidden_and_calls_nothing() {
+		$gateway = $this->create_configured_gateway();
+		$this->assertTrue( $gateway->is_available() );
 
-		$this->assertTrue( $gateway->needs_reconnect() );
-		$this->assertFalse( $gateway->is_available(), 'Hidden at checkout until reconnected, rather than failing orders.' );
-
-		$order = $this->create_real_order();
+		$gateway->update_option( 'secret_token', '' );
+		$gateway = new WC_Gateway_Monokulo();
+		$this->assertFalse( $gateway->is_available() );
 		try {
-			$gateway->process_payment( $order->get_id() );
-			$this->fail( 'An old connection must not create orders.' );
+			$gateway->process_payment( $this->create_real_order()->get_id() );
+			$this->fail( 'An incomplete connection must not create orders.' );
 		} catch ( Exception $e ) {
-			$this->assertNull( $this->captured_request, 'Nothing is sent for an old connection.' );
+			$this->assertNull( $this->captured_request );
 		}
-
-		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
-		ob_start();
-		WC_Gateway_Monokulo::render_reconnect_notice();
-		$notice = ob_get_clean();
-		$this->assertStringContainsString( 'please reconnect', $notice );
-		$this->assertStringContainsString( 'section=monokulo', $notice );
-
-		// A current connection: available, and no notice.
-		$current = $this->create_configured_gateway();
-		$this->assertFalse( $current->needs_reconnect() );
-		$this->assertTrue( $current->is_available() );
-		ob_start();
-		WC_Gateway_Monokulo::render_reconnect_notice();
-		$this->assertSame( '', ob_get_clean() );
-	}
-
-	/**
-	 * A store that never connected isn't told to "reconnect" - it just
-	 * isn't connected yet.
-	 */
-	public function test_a_store_that_never_connected_gets_no_reconnect_notice() {
-		$this->assertFalse( WC_Gateway_Monokulo::settings_need_reconnect( false ) );
-		$this->assertFalse( WC_Gateway_Monokulo::settings_need_reconnect( array( 'enabled' => 'no', 'endpoint' => '' ) ) );
-		$this->assertTrue( WC_Gateway_Monokulo::settings_need_reconnect( array( 'endpoint' => 'http://anything' ) ) );
 	}
 }

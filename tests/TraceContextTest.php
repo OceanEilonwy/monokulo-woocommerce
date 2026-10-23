@@ -51,7 +51,6 @@ class TraceContextTest extends WP_UnitTestCase {
 		$seed->update_option( 'endpoint', 'http://monokulo.test' );
 		$seed->update_option( 'public_key', 'pk_test_abc123' );
 		$seed->update_option( 'secret_token', 'sk_test_secret' );
-		$seed->update_option( 'connection_version', WC_Gateway_Monokulo::CONNECTION_VERSION );
 		$seed->update_option( 'forward_errors', $forward );
 		return new WC_Gateway_Monokulo();
 	}
