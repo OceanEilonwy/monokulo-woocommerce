@@ -91,6 +91,15 @@ function monokulo_connect_return(): void {
 add_action( 'admin_post_monokulo_connect_return', 'monokulo_connect_return' );
 
 /**
+ * The Test connection button:
+ * `admin-post.php?action=monokulo_test_connection`.
+ */
+function monokulo_test_connection(): void {
+	monokulo_gateway()?->handle_test_connection();
+}
+add_action( 'admin_post_monokulo_test_connection', 'monokulo_test_connection' );
+
+/**
  * Monokulo's webhooks: `POST /wp-json/monokulo/v1/webhook`.
  */
 function monokulo_register_webhook_route(): void {
@@ -136,11 +145,13 @@ function monokulo_register_blocks_support( $registry ): void {
 add_action( 'woocommerce_blocks_payment_method_type_registration', 'monokulo_register_blocks_support' );
 
 /**
- * Says how connecting went, on the gateway's settings page.
+ * Says how connecting, or testing the connection, went, on the gateway's
+ * settings page.
  */
 function monokulo_connect_notice(): void {
 	if ( class_exists( 'WC_Gateway_Monokulo' ) ) {
 		WC_Gateway_Monokulo::render_connect_notice();
+		WC_Gateway_Monokulo::render_test_notice();
 	}
 }
 add_action( 'admin_notices', 'monokulo_connect_notice' );

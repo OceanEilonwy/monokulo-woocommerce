@@ -318,6 +318,65 @@ class WebhookTest extends MonokuloTestCase {
 		$this->assertStringContainsString( 'bb22', self::notes( $order ) );
 	}
 
+	public function test_a_test_webhook_is_taken_kept_and_changes_no_order() {
+		$order = self::order_paying( 'mko_untouched' );
+		$body  = self::event(
+			array(
+				'event'      => 'webhook.test',
+				'event_id'   => 'evt_test_1',
+				'created_at' => 1760020332,
+				'store'      => array(
+					'id'   => 'store-1',
+					'name' => 'Bakery',
+				),
+				'webhook'    => array( 'id' => 'wh_1' ),
+			)
+		);
+		$this->assertSame( 200, $this->deliver( $body ) );
+		$last = get_option( WC_Gateway_Monokulo::LAST_TEST_OPTION );
+		$this->assertSame( 'evt_test_1', $last['event_id'] );
+		$this->assertSame( 1760020332, $last['created_at'] );
+		$this->assertEqualsWithDelta( time(), $last['received_at'], 5 );
+		$this->assertTrue( $this->logged( 'Test webhook evt_test_1 received, signature verified.' ) );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( 'pending', $order->get_status() );
+		$this->assertSame( '', self::notes( $order ) );
+		$this->assertStringContainsString( 'Last test webhook received: ', WC_Gateway_Monokulo::last_test_line() );
+		$this->assertStringContainsString( '(evt_test_1).', WC_Gateway_Monokulo::last_test_line() );
+	}
+
+	public function test_a_test_webhook_that_is_not_signed_is_refused_and_not_kept() {
+		$body = self::event( array( 'event' => 'webhook.test' ) );
+		$this->assertSame( 401, $this->deliver( $body, '' ) );
+		$this->assertSame( 401, $this->deliver( $body, monokulo_test_signature( $body, 'whsec_other' ) ) );
+		$this->assertFalse( get_option( WC_Gateway_Monokulo::LAST_TEST_OPTION ) );
+		$this->assertSame( 'Last test webhook received: none yet.', WC_Gateway_Monokulo::last_test_line() );
+	}
+
+	public function test_an_order_event_without_an_order_id_is_a_bad_request() {
+		$this->assertSame( 400, $this->deliver( self::event( array( 'event' => 'order.paid' ) ) ) );
+	}
+
+	public function test_unknown_events_are_taken_whatever_they_carry() {
+		$order = self::order_paying( 'mko_bystander' );
+		foreach ( array(
+			'no order'      => array( 'event' => 'store.renamed' ),
+			'another order' => array(
+				'event'    => 'order.refunded',
+				'order_id' => 'mko_elsewhere',
+			),
+			'odd order id'  => array(
+				'event'    => 'payment.relabelled',
+				'order_id' => 7,
+			),
+		) as $case => $fields ) {
+			$this->assertSame( 200, $this->deliver( self::event( $fields ) ), $case );
+		}
+		$this->assertSame( 'pending', wc_get_order( $order->get_id() )->get_status() );
+		$this->assertSame( '', self::notes( $order ) );
+		$this->assertFalse( get_option( WC_Gateway_Monokulo::LAST_TEST_OPTION ) );
+	}
+
 	public function test_events_from_a_newer_monokulo_are_taken_and_change_nothing() {
 		$order = self::order_paying( 'mko_future' );
 		foreach ( array( 'order.refunded', 'payment.relabelled' ) as $event ) {

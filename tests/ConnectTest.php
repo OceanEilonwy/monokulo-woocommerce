@@ -52,8 +52,10 @@ class ConnectTest extends MonokuloTestCase {
 	public function test_connecting_saves_the_store_and_turns_monero_on() {
 		list( , $nonce ) = $this->render_connect();
 		$this->monokulo_answers( self::response( 200, Monokulo_Api_Fixtures::finish() ) );
+		update_option( WC_Gateway_Monokulo::LAST_TEST_OPTION, array( 'event_id' => 'evt_old_webhook' ) );
 
 		$back = $this->connect_return( array( 'token' => 'conn_token', 'nonce' => $nonce ) );
+		$this->assertFalse( get_option( WC_Gateway_Monokulo::LAST_TEST_OPTION ), 'the last test was the old webhook\'s' );
 
 		$this->assertCount( 1, $this->sent );
 		$this->assertSame( self::ADDRESS . '/plugins/connect/woocommerce/finish', $this->sent[0]['url'] );

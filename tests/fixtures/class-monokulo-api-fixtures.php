@@ -42,14 +42,19 @@ final class Monokulo_Api_Fixtures {
 				'curies'       => self::curies(),
 			),
 			'_templates' => array(
-				'create-order' => array(
+				'create-order'      => array(
 					'method'      => 'POST',
 					'target'      => $prefix . '/api/v1/orders',
 					'contentType' => 'application/json',
 				),
-				'send-logs'    => array(
+				'send-logs'         => array(
 					'method'      => 'POST',
 					'target'      => $prefix . '/api/v1/logs',
+					'contentType' => 'application/json',
+				),
+				'send-test-webhook' => array(
+					'method'      => 'POST',
+					'target'      => $prefix . '/api/v1/webhook-tests',
 					'contentType' => 'application/json',
 				),
 			),
@@ -348,6 +353,126 @@ final class Monokulo_Api_Fixtures {
 			'detail' => 'This Monokulo instance can\'t connect plugins yet: its operator hasn\'t set its public address (the public URI setting on the admin settings page). Plugins need it to create orders and send customers to the checkout. Ask the operator to set it, then try connecting again.',
 		),
 	);
+
+	/**
+	 * Every problem `POST /api/v1/webhook-tests` (the `send-test-webhook`
+	 * form) answers with, as recorded.
+	 */
+	const WEBHOOK_TEST_PROBLEMS = array(
+		'invalid-request' => array(
+			'type' => 'https://docs.monokulo.com/problems/invalid-request',
+			'title' => 'Invalid request',
+			'status' => 400,
+			'detail' => 'Failed to deserialize the JSON body into the target type: webhook_id: invalid type: integer `7`, expected a string at line 1 column 15',
+		),
+		'unauthorized' => array(
+			'type' => 'https://docs.monokulo.com/problems/unauthorized',
+			'title' => 'No valid key',
+			'status' => 401,
+			'detail' => 'This key was not accepted. Check it, or connect the store or app again.',
+		),
+		'forbidden' => array(
+			'type' => 'https://docs.monokulo.com/problems/forbidden',
+			'title' => 'Not allowed with this key',
+			'status' => 403,
+			'detail' => 'A pk key may not do this. It takes sk.',
+		),
+		'not-found' => array(
+			'type' => 'https://docs.monokulo.com/problems/not-found',
+			'title' => 'Not found',
+			'status' => 404,
+			'detail' => 'There\'s no such webhook for this store. Name one of its webhooks in `webhook_id`, or connect the plugin again with a `webhook_url`.',
+		),
+		'too-large' => array(
+			'type' => 'https://docs.monokulo.com/problems/too-large',
+			'title' => 'Request too large',
+			'status' => 413,
+			'detail' => 'Failed to buffer the request body: length limit exceeded',
+		),
+		'unsupported-media-type' => array(
+			'type' => 'https://docs.monokulo.com/problems/unsupported-media-type',
+			'title' => 'Send JSON',
+			'status' => 415,
+			'detail' => 'Expected request with `Content-Type: application/json`',
+		),
+		'challenge-required' => array(
+			'type' => 'https://docs.monokulo.com/problems/challenge-required',
+			'title' => 'Solve a challenge to continue',
+			'status' => 429,
+			'detail' => 'Too many requests from this connection. Solve the challenge and retry with the Monokulo-Proof header.',
+			'challenge' => array(
+				'algorithm' => 'sha256-leading-zero-bits',
+				'challenge' => '706f777c31367c313736373232353930307c69703a3230332e302e3131332e33307c303030303030303030303030303030303030303030303030.0000000000000000000000000000000000000000000000000000000000000000',
+				'difficulty' => 16,
+				'expires_in' => 300,
+				'proof_header' => 'Monokulo-Proof',
+			),
+		),
+		'rate-limited' => array(
+			'type' => 'https://docs.monokulo.com/problems/rate-limited',
+			'title' => 'Too many requests',
+			'status' => 429,
+			'detail' => 'Rate limit exceeded; retry in 120 s.',
+			'retry_after' => 120,
+		),
+		'internal' => array(
+			'type' => 'https://docs.monokulo.com/problems/internal',
+			'title' => 'Internal error',
+			'status' => 500,
+			'detail' => 'Something went wrong on this Monokulo. Try again in a moment.',
+		),
+	);
+
+	/**
+	 * `POST /api/v1/webhook-tests` (the `send-test-webhook` form) with `{}`:
+	 * delivered, as recorded (`sk`). Not delivered, the same with what the
+	 * schema says Monokulo adds then: the status the shop answered (none
+	 * when nothing answered), the error and the next attempt.
+	 *
+	 * @param string $prefix    The path Monokulo is served under (`/monokulo`), or ''.
+	 * @param bool   $delivered Whether the shop answered 2xx.
+	 * @param int    $status    Not delivered: the status the shop answered, 0 for none.
+	 */
+	public static function webhook_test( string $prefix = '', bool $delivered = true, int $status = 500 ): array {
+		$test = array(
+			'webhook_id'  => 'wh_00000000000000000000000000000001',
+			'event_id'    => 'evt_0000000000000002',
+			'delivered'   => true,
+			'status'      => 200,
+			'duration_ms' => 12,
+			'response'    => "HTTP/1.1 200 OK\ncontent-type: text/plain; charset=utf-8\n\nok",
+			'_links'      => array(
+				'self'     => array( 'href' => $prefix . '/api/v1/webhook-tests' ),
+				'mk:store' => array(
+					'href'  => $prefix . '/api/v1/store',
+					'title' => 'The store the key belongs to, and where its payments go.',
+				),
+				'curies'   => self::curies(),
+			),
+			'_templates'  => array(
+				'send-test-webhook' => array(
+					'method'      => 'POST',
+					'target'      => $prefix . '/api/v1/webhook-tests',
+					'contentType' => 'application/json',
+				),
+			),
+		);
+		if ( $delivered ) {
+			return $test;
+		}
+		$test['delivered']       = false;
+		$test['next_attempt_at'] = 1760020452;
+		if ( 0 === $status ) {
+			unset( $test['status'], $test['response'] );
+			$test['error']       = 'timed out';
+			$test['duration_ms'] = 5000;
+		} else {
+			$test['status']   = $status;
+			$test['error']    = 'answered ' . $status;
+			$test['response'] = 'HTTP/1.1 ' . $status . "\ncontent-type: application/json\n\n";
+		}
+		return $test;
+	}
 
 	/**
 	 * A problem `POST /api/v1/orders` answers with, as recorded.
