@@ -63,6 +63,9 @@ final class Monokulo_Api_Fixtures {
 
 	/**
 	 * The `201 Created` body of a new order, as the store's secret key gets it.
+	 * A field with no value is left out, never `null`: an order not
+	 * cancelled has no `cancelled_at`, and `amount`, `currency`,
+	 * `merchant_order_id` and `description` are left out when it has none.
 	 *
 	 * @param string $order_id Its id.
 	 * @param string $prefix   The path Monokulo is served under, or ''.
@@ -85,7 +88,6 @@ final class Monokulo_Api_Fixtures {
 			'confirmations_required'   => 10,
 			'created_at'               => 1760020320,
 			'expires_at'               => 4102444800,
-			'cancelled_at'             => null,
 			'_links'                   => array(
 				'self'               => array( 'href' => $prefix . '/api/v1/orders/' . $order_id ),
 				'collection'         => array( 'href' => $prefix . '/api/v1/orders' ),
@@ -162,6 +164,67 @@ final class Monokulo_Api_Fixtures {
 				'templated' => true,
 			),
 		);
+	}
+
+	/**
+	 * The problems `POST /api/v1/orders` answers with that the plugin tells
+	 * apart, by name, as Monokulo's OpenAPI document records them (the
+	 * smoke suite checks each against the recorded example).
+	 */
+	const ORDER_PROBLEMS = array(
+		'invalid-amount' => array(
+			'type' => 'https://docs.monokulo.com/problems/invalid-amount',
+			'title' => 'The order can\'t be priced',
+			'status' => 400,
+			'detail' => 'unknown currency: NOPE',
+		),
+		'unauthorized' => array(
+			'type' => 'https://docs.monokulo.com/problems/unauthorized',
+			'title' => 'No valid key',
+			'status' => 401,
+			'detail' => 'This key was not accepted. Check it, or connect the store or app again.',
+		),
+		'forbidden' => array(
+			'type' => 'https://docs.monokulo.com/problems/forbidden',
+			'title' => 'Not allowed with this key',
+			'status' => 403,
+			'detail' => 'This store only accepts orders from its verified websites, or from its own server using the store\'s secret key.',
+		),
+		'idempotency-conflict' => array(
+			'type' => 'https://docs.monokulo.com/problems/idempotency-conflict',
+			'title' => 'Key used for another order',
+			'status' => 409,
+			'detail' => 'this idempotency_key was already used for a different order',
+		),
+		'rate-limited' => array(
+			'type' => 'https://docs.monokulo.com/problems/rate-limited',
+			'title' => 'Too many requests',
+			'status' => 429,
+			'detail' => 'Rate limit exceeded; retry in 93 s.',
+			'retry_after' => 93,
+		),
+		'engine-unavailable' => array(
+			'type' => 'https://docs.monokulo.com/problems/engine-unavailable',
+			'title' => 'Payment engine unavailable',
+			'status' => 503,
+			'detail' => 'The payment engine is busy or unreachable. Try again in a moment.',
+		),
+		'rates-unavailable' => array(
+			'type' => 'https://docs.monokulo.com/problems/rates-unavailable',
+			'title' => 'No exchange rate right now',
+			'status' => 503,
+			'detail' => 'There\'s no exchange rate for USD right now: the rate providers are busy or unreachable. Try again in 42 s.',
+			'retry_after' => 42,
+		),
+	);
+
+	/**
+	 * A problem `POST /api/v1/orders` answers with, as recorded.
+	 *
+	 * @param string $name Its name (`rates-unavailable`).
+	 */
+	public static function order_problem( string $name ): array {
+		return self::ORDER_PROBLEMS[ $name ];
 	}
 
 	/**

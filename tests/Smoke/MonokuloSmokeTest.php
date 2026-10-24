@@ -216,6 +216,26 @@ final class MonokuloSmokeTest extends TestCase {
 		// Only the secret key is given the dashboard page.
 		$this->assertArrayNotHasKey('mk:dashboard-order', self::example($doc, '/api/v1/orders', 'post', '201', 'pk')['_links']);
 
+		// The problems the unit tests answer create-order with are the
+		// recorded ones, each under its own status (no catch-all
+		// `default`), and the statuses the plugin waits on say how long in
+		// a Retry-After header.
+		$create = $doc['paths']['/api/v1/orders']['post']['responses'];
+		$this->assertArrayNotHasKey('default', $create, 'create-order lists each problem by status');
+		foreach (\Monokulo_Api_Fixtures::ORDER_PROBLEMS as $name => $fixture) {
+			$recorded = self::example($doc, '/api/v1/orders', 'post', (string)$fixture['status'], $name);
+			ksort($fixture);
+			ksort($recorded);
+			$this->assertSame($fixture, $recorded, "create-order's $name");
+		}
+		foreach (['429', '503'] as $status) {
+			$this->assertArrayHasKey('Retry-After', $create[$status]['headers'] ?? [], "create-order's $status says when to try again");
+		}
+
+		// A field with no value is left out, never null, in every
+		// recorded body: the order fixture has no `cancelled_at`.
+		$this->assertStringNotContainsString(':null', (string)json_encode($doc), 'no null in the document');
+
 		// Every refusal of the handshake is a problem, named for its type.
 		foreach ($doc['paths']['/plugins/connect/{slug}/finish']['post']['responses'] as $status => $response) {
 			if ('200' === (string)$status) {
