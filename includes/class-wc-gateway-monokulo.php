@@ -579,7 +579,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$raw     = wp_remote_retrieve_body( $response );
 		$decoded = json_decode( $raw, true );
 		if ( 200 !== $status || ! is_array( $decoded ) || ! is_array( $decoded['_links'] ?? null ) ) {
-			$this->log( sprintf( 'Reading the API entry at %s returned HTTP %d: %s%s', $this->api, $status, self::problem( $raw )['text'], self::hint_for_status( $status ) ), 'error' );
+			$problem = self::problem( $raw );
+			$this->log( sprintf( 'Reading the API entry at %s returned HTTP %d: %s%s', $this->api, $status, $problem['text'], self::hint_for_status( $status, $problem['type'] ) ), 'error' );
 			throw new Exception( esc_html( self::customer_message( 200 === $status ? 0 : $status, '' ) ) );
 		}
 
@@ -809,7 +810,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		if ( 429 === $status ) {
 			return __( 'Monero payments are busy right now. Please wait a moment and try again.', 'monokulo' );
 		}
-		if ( 503 === $status ) {
+		if ( 503 === $status || 500 === $status ) {
 			return __( 'Monero payments are unavailable for a moment. Please try again shortly.', 'monokulo' );
 		}
 		if ( 401 === $status || 403 === $status ) {
@@ -828,6 +829,19 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @param string $type   The problem's `type`, if any.
 	 */
 	private static function hint_for_status( int $status, string $type = '' ): string {
+		$name = (string) preg_replace( '#\A.*/#', '', $type );
+		if ( 'store-unavailable' === $name ) {
+			return ' (Monokulo could not read this store\'s settings, which say which websites may make its orders, so it refused the order rather than guess. No order was made and nothing in the plugin needs changing; the customer was asked to try again shortly, and placing the order again sends the same idempotency key. If it keeps happening, Monokulo\'s database is not answering: ask its operator to check Monokulo\'s logs)';
+		}
+		if ( 'internal' === $name ) {
+			return ' (something went wrong on Monokulo itself. No order was made; the customer was asked to try again shortly, and placing the order again sends the same idempotency key. If it keeps happening, Monokulo\'s operator can find why in Monokulo\'s logs)';
+		}
+		if ( 'challenge-required' === $name ) {
+			return ' (Monokulo treated this shop like a busy browser and asked for a proof of work, which it never asks of a request carrying the store secret key: the key did not reach it. Check that a proxy in front of Monokulo passes the Authorization header on, or reconnect the plugin from its settings page)';
+		}
+		if ( in_array( $name, array( 'invalid-request', 'too-large', 'unsupported-media-type' ), true ) ) {
+			return ' (Monokulo did not accept the request this plugin sent. Update the Monokulo plugin; if it is up to date, a proxy between the shop and Monokulo may be changing requests, or report this log line to the plugin\'s authors)';
+		}
 		if ( str_ends_with( $type, '/rates-unavailable' ) ) {
 			return ' (Monokulo has no exchange rate for the order\'s currency right now: its rate providers are down or limiting it. No order was made; the customer was asked to try again shortly, and placing the order again sends the same idempotency key)';
 		}
@@ -1329,6 +1343,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'nonce' === $error                => __( 'That connect link was already used or has expired. Please connect again.', 'monokulo' ),
 			'invalid-connect-code' === $error => __( 'Monokulo did not take the connect code: it was already used or has expired. Please connect again.', 'monokulo' ),
 			'rate-limited' === $error         => __( 'Monokulo is busy. Wait a minute, then connect again.', 'monokulo' ),
+			'internal' === $error             => __( 'Something went wrong on your Monokulo. Connect again in a moment; if it keeps happening, its operator can find why in Monokulo\'s logs.', 'monokulo' ),
 			null !== $error                   => __( 'Monokulo did not hand over the store\'s keys. Please connect again; the log says why.', 'monokulo' ),
 			default                           => null,
 		};

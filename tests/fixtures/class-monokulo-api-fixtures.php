@@ -167,9 +167,9 @@ final class Monokulo_Api_Fixtures {
 	}
 
 	/**
-	 * The problems `POST /api/v1/orders` answers with that the plugin tells
-	 * apart, by name, as Monokulo's OpenAPI document records them (the
-	 * smoke suite checks each against the recorded example).
+	 * Every problem `POST /api/v1/orders` answers with, by name, as
+	 * Monokulo's OpenAPI document records them (the smoke suite checks each
+	 * against the recorded example, and that none is missing).
 	 */
 	const ORDER_PROBLEMS = array(
 		'invalid-amount' => array(
@@ -177,6 +177,12 @@ final class Monokulo_Api_Fixtures {
 			'title' => 'The order can\'t be priced',
 			'status' => 400,
 			'detail' => 'unknown currency: NOPE',
+		),
+		'invalid-request' => array(
+			'type' => 'https://docs.monokulo.com/problems/invalid-request',
+			'title' => 'Invalid request',
+			'status' => 400,
+			'detail' => 'Failed to deserialize the JSON body into the target type: amount: Amount must match ^[0-9]+(\\.[0-9]{1,12}0*)?$, like 12.50 at line 1 column 18',
 		),
 		'unauthorized' => array(
 			'type' => 'https://docs.monokulo.com/problems/unauthorized',
@@ -196,12 +202,43 @@ final class Monokulo_Api_Fixtures {
 			'status' => 409,
 			'detail' => 'this idempotency_key was already used for a different order',
 		),
+		'too-large' => array(
+			'type' => 'https://docs.monokulo.com/problems/too-large',
+			'title' => 'Request too large',
+			'status' => 413,
+			'detail' => 'Failed to buffer the request body: length limit exceeded',
+		),
+		'unsupported-media-type' => array(
+			'type' => 'https://docs.monokulo.com/problems/unsupported-media-type',
+			'title' => 'Send JSON',
+			'status' => 415,
+			'detail' => 'Expected request with `Content-Type: application/json`',
+		),
+		'challenge-required' => array(
+			'type' => 'https://docs.monokulo.com/problems/challenge-required',
+			'title' => 'Solve a challenge to continue',
+			'status' => 429,
+			'detail' => 'Too many requests from this connection. Solve the challenge and retry with the Monokulo-Proof header.',
+			'challenge' => array(
+				'algorithm' => 'sha256-leading-zero-bits',
+				'challenge' => '706f777c31367c313736373232353930307c69703a3230332e302e3131332e33307c303030303030303030303030303030303030303030303030.0000000000000000000000000000000000000000000000000000000000000000',
+				'difficulty' => 16,
+				'expires_in' => 300,
+				'proof_header' => 'Monokulo-Proof',
+			),
+		),
 		'rate-limited' => array(
 			'type' => 'https://docs.monokulo.com/problems/rate-limited',
 			'title' => 'Too many requests',
 			'status' => 429,
-			'detail' => 'Rate limit exceeded; retry in 93 s.',
-			'retry_after' => 93,
+			'detail' => 'Rate limit exceeded; retry in 120 s.',
+			'retry_after' => 120,
+		),
+		'internal' => array(
+			'type' => 'https://docs.monokulo.com/problems/internal',
+			'title' => 'Internal error',
+			'status' => 500,
+			'detail' => 'Something went wrong on this Monokulo. Try again in a moment.',
 		),
 		'engine-unavailable' => array(
 			'type' => 'https://docs.monokulo.com/problems/engine-unavailable',
@@ -215,6 +252,100 @@ final class Monokulo_Api_Fixtures {
 			'status' => 503,
 			'detail' => 'There\'s no exchange rate for USD right now: the rate providers are busy or unreachable. Try again in 42 s.',
 			'retry_after' => 42,
+		),
+		'store-unavailable' => array(
+			'type' => 'https://docs.monokulo.com/problems/store-unavailable',
+			'title' => 'Store unavailable',
+			'status' => 503,
+			'detail' => 'This store\'s settings can\'t be read right now. Please try again shortly.',
+		),
+	);
+
+	/**
+	 * Every problem `GET /api/v1` answers with, as recorded.
+	 */
+	const ENTRY_PROBLEMS = array(
+		'unauthorized' => array(
+			'type' => 'https://docs.monokulo.com/problems/unauthorized',
+			'title' => 'No valid key',
+			'status' => 401,
+			'detail' => 'This key was not accepted. Check it, or connect the store or app again.',
+		),
+		'challenge-required' => array(
+			'type' => 'https://docs.monokulo.com/problems/challenge-required',
+			'title' => 'Solve a challenge to continue',
+			'status' => 429,
+			'detail' => 'Too many requests from this connection. Solve the challenge and retry with the Monokulo-Proof header.',
+			'challenge' => array(
+				'algorithm' => 'sha256-leading-zero-bits',
+				'challenge' => '706f777c31367c313736373232353930307c69703a3230332e302e3131332e33307c303030303030303030303030303030303030303030303030.0000000000000000000000000000000000000000000000000000000000000000',
+				'difficulty' => 16,
+				'expires_in' => 300,
+				'proof_header' => 'Monokulo-Proof',
+			),
+		),
+		'rate-limited' => array(
+			'type' => 'https://docs.monokulo.com/problems/rate-limited',
+			'title' => 'Too many requests',
+			'status' => 429,
+			'detail' => 'Rate limit exceeded; retry in 120 s.',
+			'retry_after' => 120,
+		),
+	);
+
+	/**
+	 * Every problem the connect handshake's `/finish` answers with, as
+	 * recorded.
+	 */
+	const FINISH_PROBLEMS = array(
+		'invalid-request' => array(
+			'type' => 'https://docs.monokulo.com/problems/invalid-request',
+			'title' => 'Invalid request',
+			'status' => 400,
+			'detail' => 'A webhook URL must start with http:// or https://.',
+		),
+		'invalid-connect-code' => array(
+			'type' => 'https://docs.monokulo.com/problems/invalid-connect-code',
+			'title' => 'Connect code not valid',
+			'status' => 401,
+			'detail' => 'This connect code is unknown, already used or expired. Start connecting again.',
+		),
+		'not-found' => array(
+			'type' => 'https://docs.monokulo.com/problems/not-found',
+			'title' => 'Not found',
+			'status' => 404,
+			'detail' => 'Presta! isn\'t a plugin\'s slug: a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens.',
+		),
+		'too-large' => array(
+			'type' => 'https://docs.monokulo.com/problems/too-large',
+			'title' => 'Request too large',
+			'status' => 413,
+			'detail' => 'Failed to buffer the request body: length limit exceeded',
+		),
+		'unsupported-media-type' => array(
+			'type' => 'https://docs.monokulo.com/problems/unsupported-media-type',
+			'title' => 'Send JSON',
+			'status' => 415,
+			'detail' => 'Expected request with `Content-Type: application/json`',
+		),
+		'rate-limited' => array(
+			'type' => 'https://docs.monokulo.com/problems/rate-limited',
+			'title' => 'Too many requests',
+			'status' => 429,
+			'detail' => 'Rate limit exceeded; retry in 120 s.',
+			'retry_after' => 120,
+		),
+		'internal' => array(
+			'type' => 'https://docs.monokulo.com/problems/internal',
+			'title' => 'Internal error',
+			'status' => 500,
+			'detail' => 'Something went wrong on this Monokulo. Try again in a moment.',
+		),
+		'no-public-address' => array(
+			'type' => 'https://docs.monokulo.com/problems/no-public-address',
+			'title' => 'No public address yet',
+			'status' => 503,
+			'detail' => 'This Monokulo instance can\'t connect plugins yet: its operator hasn\'t set its public address (the public URI setting on the admin settings page). Plugins need it to create orders and send customers to the checkout. Ask the operator to set it, then try connecting again.',
 		),
 	);
 

@@ -222,11 +222,20 @@ final class MonokuloSmokeTest extends TestCase {
 		// a Retry-After header.
 		$create = $doc['paths']['/api/v1/orders']['post']['responses'];
 		$this->assertArrayNotHasKey('default', $create, 'create-order lists each problem by status');
-		foreach (\Monokulo_Api_Fixtures::ORDER_PROBLEMS as $name => $fixture) {
-			$recorded = self::example($doc, '/api/v1/orders', 'post', (string)$fixture['status'], $name);
-			ksort($fixture);
-			ksort($recorded);
-			$this->assertSame($fixture, $recorded, "create-order's $name");
+		$routes = [
+			['/api/v1/orders', 'post', \Monokulo_Api_Fixtures::ORDER_PROBLEMS],
+			['/api/v1', 'get', \Monokulo_Api_Fixtures::ENTRY_PROBLEMS],
+			['/plugins/connect/{slug}/finish', 'post', \Monokulo_Api_Fixtures::FINISH_PROBLEMS],
+		];
+		foreach ($routes as [$path, $method, $fixtures]) {
+			// Every problem the route lists is one the plugin was tested with.
+			$this->assertEqualsCanonicalizing(array_keys($fixtures), self::problemNames($doc, $path, $method), "$method $path's problems");
+			foreach ($fixtures as $name => $fixture) {
+				$recorded = self::example($doc, $path, $method, (string)$fixture['status'], $name);
+				ksort($fixture);
+				ksort($recorded);
+				$this->assertSame($fixture, $recorded, "$method $path's $name");
+			}
 		}
 		foreach (['429', '503'] as $status) {
 			$this->assertArrayHasKey('Retry-After', $create[$status]['headers'] ?? [], "create-order's $status says when to try again");
@@ -261,6 +270,19 @@ final class MonokuloSmokeTest extends TestCase {
 		}
 		ksort($hrefs);
 		return $hrefs;
+	}
+
+	/** @return list<string> the names of the problems an operation's recorded examples show */
+	private static function problemNames(array $doc, string $path, string $method): array {
+		$names = [];
+		foreach ($doc['paths'][$path][$method]['responses'] as $status => $response) {
+			if ((int)$status >= 400) {
+				foreach ($response['content'] ?? [] as $content) {
+					$names = array_merge($names, array_keys($content['examples'] ?? []));
+				}
+			}
+		}
+		return $names;
 	}
 
 	/** A recorded example's body. */

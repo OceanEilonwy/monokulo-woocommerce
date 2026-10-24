@@ -410,16 +410,28 @@ class CheckoutTest extends MonokuloTestCase {
 			$problem = Monokulo_Api_Fixtures::order_problem( $name );
 			return self::response( $problem['status'], $problem );
 		};
+		$entry_problem = static function ( string $name ) {
+			$problem = Monokulo_Api_Fixtures::ENTRY_PROBLEMS[ $name ];
+			return self::response( $problem['status'], $problem );
+		};
 
 		$cases = array(
 			'unreachable'       => array( array( $entry => new WP_Error( 'http_request_failed', 'cURL error 7' ) ), 'could not be reached', 'cURL error 7' ),
-			'entry 401'         => array( array( $entry => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'the store secret key was rejected - reconnect the plugin' ),
+			'entry 401'         => array( array( $entry => $entry_problem( 'unauthorized' ) ), 'not available for this store', 'the store secret key was rejected - reconnect the plugin' ),
+			'entry 429'         => array( array( $entry => $entry_problem( 'rate-limited' ) ), 'busy right now', 'rate limited' ),
+			'entry challenge'   => array( array( $entry => $entry_problem( 'challenge-required' ) ), 'busy right now', 'passes the Authorization header on' ),
 			'entry 404'         => array( array( $entry => $problem( 404, 'not-found', 'Not found', 'detail 404' ) ), 'could not be started', 'check the Monokulo address' ),
 			'no form'           => array( array( $entry => self::entry_response( $bare ) ), 'could not be started', 'offers no "create-order" form' ),
 			'create unreachable' => array( array( $create => new WP_Error( 'http_request_failed', 'cURL error 28' ) ), 'could not be reached', 'cURL error 28' ),
 			'HTTP 401'          => array( array( $create => $recorded( 'unauthorized' ) ), 'not available for this store', 'No valid key: This key was not accepted. Check it, or connect the store or app again. (https://docs.monokulo.com/problems/unauthorized)' ),
 			'HTTP 403'          => array( array( $create => $recorded( 'forbidden' ) ), 'not available for this store', 'Not allowed with this key' ),
 			'HTTP 429'          => array( array( $create => $recorded( 'rate-limited' ) ), 'busy right now', 'rate limited' ),
+			'challenge'         => array( array( $create => $recorded( 'challenge-required' ) ), 'busy right now', 'it never asks of a request carrying the store secret key' ),
+			'store away'        => array( array( $create => $recorded( 'store-unavailable' ) ), 'try again shortly', 'could not read this store\'s settings' ),
+			'internal'          => array( array( $create => $recorded( 'internal' ) ), 'try again shortly', 'something went wrong on Monokulo itself' ),
+			'invalid request'   => array( array( $create => $recorded( 'invalid-request' ) ), 'could not be started', 'did not accept the request this plugin sent. Update the Monokulo plugin' ),
+			'too large'         => array( array( $create => $recorded( 'too-large' ) ), 'could not be started', 'Request too large: Failed to buffer the request body' ),
+			'sent as other'     => array( array( $create => $recorded( 'unsupported-media-type' ) ), 'could not be started', 'Send JSON: Expected request with `Content-Type: application/json`' ),
 			'no rate'           => array( array( $create => $recorded( 'rates-unavailable' ) ), 'try again shortly', 'no exchange rate for the order\'s currency right now' ),
 			'engine away'       => array( array( $create => $recorded( 'engine-unavailable' ) ), 'try again shortly', 'payment engine is busy or unreachable' ),
 			'invalid amount'    => array( array( $create => $recorded( 'invalid-amount' ) ), 'cannot be priced', 'unknown currency: NOPE' ),
@@ -448,17 +460,19 @@ class CheckoutTest extends MonokuloTestCase {
 	}
 
 	/**
-	 * Monokulo had no exchange rate, or its engine was away: no order was
+	 * Monokulo had no exchange rate, its engine was away, it couldn't read
+	 * the store's settings, or something went wrong on it: no order was
 	 * made. The customer is asked to try again shortly, the merchant's log
 	 * says how long Monokulo asked to wait, and placing the order again
 	 * sends the same idempotency key, so it can only ever make one order.
 	 */
 	public function test_an_order_monokulo_cannot_make_yet_is_tried_again_with_the_same_key() {
-		foreach ( array( 'rates-unavailable' => array( 'retry-after' => '42' ), 'engine-unavailable' => array() ) as $name => $headers ) {
+		foreach ( array( 'rates-unavailable' => array( 'retry-after' => '42' ), 'engine-unavailable' => array(), 'store-unavailable' => array(), 'internal' => array() ) as $name => $headers ) {
 			$this->logged = array();
 			$this->sent   = array();
 			$order        = self::order();
-			$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 503, Monokulo_Api_Fixtures::order_problem( $name ), $headers ) ) );
+			$problem      = Monokulo_Api_Fixtures::order_problem( $name );
+			$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( $problem['status'], $problem, $headers ) ) );
 			try {
 				self::connected_gateway()->process_payment( $order->get_id() );
 				$this->fail( "$name should have thrown." );

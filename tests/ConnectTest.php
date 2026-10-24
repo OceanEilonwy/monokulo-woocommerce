@@ -180,16 +180,11 @@ class ConnectTest extends MonokuloTestCase {
 	 * page's error and its detail is shown there; nothing changes.
 	 */
 	public function test_a_failed_finish_keeps_the_store_as_it_was() {
-		$problem = static fn( int $status, string $name, array $headers = array() ) => self::response( $status, Monokulo_Api_Fixtures::problem( $status, $name, 'Title', "detail of $name" ), $headers );
-		$answers = array(
-			'invalid-connect-code'   => $problem( 401, 'invalid-connect-code' ),
-			'no-public-address'      => $problem( 503, 'no-public-address' ),
-			'invalid-request'        => $problem( 400, 'invalid-request' ),
-			'unsupported-media-type' => $problem( 415, 'unsupported-media-type' ),
-			'too-large'              => $problem( 413, 'too-large' ),
-			'not-found'              => $problem( 404, 'not-found' ),
-			'rate-limited'           => $problem( 429, 'rate-limited', array( 'retry-after' => '30' ) ),
-			'internal'               => $problem( 500, 'internal' ),
+		$answers = array();
+		foreach ( Monokulo_Api_Fixtures::FINISH_PROBLEMS as $name => $recorded ) {
+			$answers[ $name ] = self::response( $recorded['status'], $recorded, 'rate-limited' === $name ? array( 'retry-after' => '120' ) : array() );
+		}
+		$answers += array(
 			'unreachable'            => new WP_Error( 'http_request_failed', 'cURL error 28' ),
 			'garbled'                => self::response( 200, '<html>502 Bad Gateway</html>' ),
 			'incomplete'             => self::response( 200, array( 'public_key' => 'pk_x' ) ),
@@ -212,7 +207,7 @@ class ConnectTest extends MonokuloTestCase {
 			$this->assertSame( 'https://old.example/api/v1', $after->get_option( 'api' ), $case );
 			$this->assertSame( 'no', $after->enabled, $case );
 		}
-		$this->assertTrue( $this->logged( 'returned HTTP 429: Title: detail of rate-limited (https://docs.monokulo.com/problems/rate-limited) (retry after 30 s)' ) );
+		$this->assertTrue( $this->logged( 'returned HTTP 429: Too many requests: Rate limit exceeded; retry in 120 s. (https://docs.monokulo.com/problems/rate-limited) (retry after 120 s)' ) );
 	}
 
 	public function test_a_wrong_missing_or_reused_nonce_is_refused_before_finish() {
@@ -300,7 +295,8 @@ class ConnectTest extends MonokuloTestCase {
 		$this->assertStringContainsString( 'did not take the connect code', $notice( array( 'monokulo_connect_error' => 'invalid-connect-code' ) ) );
 		$this->assertStringContainsString( 'Monokulo is busy', $notice( array( 'monokulo_connect_error' => 'rate-limited' ) ) );
 		$this->assertStringContainsString( 'did not hand over the store', $notice( array( 'monokulo_connect_error' => 'finish' ) ) );
-		$this->assertStringContainsString( 'did not hand over the store', $notice( array( 'monokulo_connect_error' => 'internal' ) ) );
+		$this->assertStringContainsString( 'Something went wrong on your Monokulo', $notice( array( 'monokulo_connect_error' => 'internal' ) ) );
+		$this->assertStringContainsString( 'did not hand over the store', $notice( array( 'monokulo_connect_error' => 'not-found' ) ) );
 		$this->assertStringNotContainsString( 'Monero', $notice( array( 'section' => 'bacs', 'monokulo_connected' => '1' ) ) );
 	}
 
