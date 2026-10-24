@@ -63,6 +63,27 @@ class CheckoutTest extends MonokuloTestCase {
 	}
 
 	/**
+	 * Monokulo leaves out a field with no value rather than sending `null`:
+	 * an order body without `cancelled_at`, `amount`, `currency`,
+	 * `merchant_order_id` or `description` is still an order the customer
+	 * is sent to pay, and nothing is logged as wrong.
+	 */
+	public function test_an_order_body_without_its_optional_fields_is_taken() {
+		$order = self::order();
+		$made  = array_diff_key(
+			Monokulo_Api_Fixtures::order( 'order_bare' ),
+			array_flip( array( 'cancelled_at', 'amount', 'currency', 'merchant_order_id', 'description' ) )
+		);
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 201, $made ) ) );
+
+		$result = self::connected_gateway()->process_payment( $order->get_id() );
+
+		$this->assertSame( 'https://pay.example.com/checkout/order_bare', $result['redirect'] );
+		$this->assertSame( 'order_bare', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ) );
+		$this->assertSame( array(), array_filter( $this->logged, static fn( array $line ) => in_array( $line[0], array( 'error', 'warning' ), true ) ) );
+	}
+
+	/**
 	 * A Monokulo served under a path (`https://example.com/monokulo`) gives
 	 * every link with that path; the plugin builds none, so its customers
 	 * and merchant reach it.
@@ -385,6 +406,10 @@ class CheckoutTest extends MonokuloTestCase {
 		$made = Monokulo_Api_Fixtures::order( 'order_1' );
 		unset( $made['_links']['mk:checkout'] );
 		$problem = static fn( int $status, string $name, string $title, string $detail ) => self::response( $status, Monokulo_Api_Fixtures::problem( $status, $name, $title, $detail ) );
+		$recorded = static function ( string $name ) {
+			$problem = Monokulo_Api_Fixtures::order_problem( $name );
+			return self::response( $problem['status'], $problem );
+		};
 
 		$cases = array(
 			'unreachable'       => array( array( $entry => new WP_Error( 'http_request_failed', 'cURL error 7' ) ), 'could not be reached', 'cURL error 7' ),
@@ -392,13 +417,13 @@ class CheckoutTest extends MonokuloTestCase {
 			'entry 404'         => array( array( $entry => $problem( 404, 'not-found', 'Not found', 'detail 404' ) ), 'could not be started', 'check the Monokulo address' ),
 			'no form'           => array( array( $entry => self::entry_response( $bare ) ), 'could not be started', 'offers no "create-order" form' ),
 			'create unreachable' => array( array( $create => new WP_Error( 'http_request_failed', 'cURL error 28' ) ), 'could not be reached', 'cURL error 28' ),
-			'HTTP 401'          => array( array( $create => $problem( 401, 'unauthorized', 'No valid key', 'detail 401' ) ), 'not available for this store', 'No valid key: detail 401 (https://docs.monokulo.com/problems/unauthorized)' ),
-			'HTTP 403'          => array( array( $create => $problem( 403, 'forbidden', 'Not allowed with this key', 'detail 403' ) ), 'not available for this store', 'Not allowed with this key' ),
-			'HTTP 429'          => array( array( $create => $problem( 429, 'rate-limited', 'Too many requests', 'detail 429' ) ), 'busy right now', 'rate limited' ),
-			'no rate'           => array( array( $create => $problem( 503, 'rates-unavailable', 'No exchange rate right now', 'detail 503' ) ), 'try again shortly', 'no exchange rate for the order\'s currency right now' ),
-			'engine away'       => array( array( $create => $problem( 503, 'engine-unavailable', 'The payment engine is unavailable', 'detail 503' ) ), 'try again shortly', 'payment engine is busy or unreachable' ),
-			'invalid amount'    => array( array( $create => $problem( 400, 'invalid-amount', 'The order can\'t be priced', 'unsupported currency: USD' ) ), 'cannot be priced', 'unsupported currency: USD' ),
-			'conflict'          => array( array( $create => $problem( 409, 'idempotency-conflict', 'Key used for another order', 'detail 409' ) ), 'could not be started', 'Key used for another order' ),
+			'HTTP 401'          => array( array( $create => $recorded( 'unauthorized' ) ), 'not available for this store', 'No valid key: This key was not accepted. Check it, or connect the store or app again. (https://docs.monokulo.com/problems/unauthorized)' ),
+			'HTTP 403'          => array( array( $create => $recorded( 'forbidden' ) ), 'not available for this store', 'Not allowed with this key' ),
+			'HTTP 429'          => array( array( $create => $recorded( 'rate-limited' ) ), 'busy right now', 'rate limited' ),
+			'no rate'           => array( array( $create => $recorded( 'rates-unavailable' ) ), 'try again shortly', 'no exchange rate for the order\'s currency right now' ),
+			'engine away'       => array( array( $create => $recorded( 'engine-unavailable' ) ), 'try again shortly', 'payment engine is busy or unreachable' ),
+			'invalid amount'    => array( array( $create => $recorded( 'invalid-amount' ) ), 'cannot be priced', 'unknown currency: NOPE' ),
+			'conflict'          => array( array( $create => $recorded( 'idempotency-conflict' ) ), 'could not be started', 'Key used for another order' ),
 			'not json'          => array( array( $create => self::response( 201, '<html>Checking your browser</html>' ) ), 'could not be started', 'Checking your browser' ),
 			'no checkout link'  => array( array( $create => self::response( 201, $made ) ), 'could not be started', 'not the expected shape' ),
 		);
@@ -413,6 +438,9 @@ class CheckoutTest extends MonokuloTestCase {
 			} catch ( Exception $e ) {
 				$this->assertStringContainsString( $customer, $e->getMessage(), $case );
 				$this->assertStringNotContainsString( 'detail', $e->getMessage(), $case );
+				foreach ( Monokulo_Api_Fixtures::ORDER_PROBLEMS as $name => $recorded_problem ) {
+					$this->assertStringNotContainsString( $recorded_problem['detail'], $e->getMessage(), "$case: $name's detail is for the merchant" );
+				}
 			}
 			$this->assertTrue( $this->logged( $merchant ), $case . ': ' . wp_json_encode( $this->logged ) );
 			$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ), $case );
@@ -426,19 +454,18 @@ class CheckoutTest extends MonokuloTestCase {
 	 * sends the same idempotency key, so it can only ever make one order.
 	 */
 	public function test_an_order_monokulo_cannot_make_yet_is_tried_again_with_the_same_key() {
-		foreach ( array( 'rates-unavailable' => array( 'retry-after' => '30' ), 'engine-unavailable' => array() ) as $name => $headers ) {
+		foreach ( array( 'rates-unavailable' => array( 'retry-after' => '42' ), 'engine-unavailable' => array() ) as $name => $headers ) {
 			$this->logged = array();
 			$this->sent   = array();
 			$order        = self::order();
-			$problem      = Monokulo_Api_Fixtures::problem( 503, $name, 'Not right now', 'Try again in a moment.' ) + ( $headers ? array( 'retry_after' => 30 ) : array() );
-			$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 503, $problem, $headers ) ) );
+			$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 503, Monokulo_Api_Fixtures::order_problem( $name ), $headers ) ) );
 			try {
 				self::connected_gateway()->process_payment( $order->get_id() );
 				$this->fail( "$name should have thrown." );
 			} catch ( Exception $e ) {
 				$this->assertSame( 'Monero payments are unavailable for a moment. Please try again shortly.', $e->getMessage(), $name );
 			}
-			$this->assertSame( $headers ? true : false, $this->logged( '(retry after 30 s)' ), $name . ': ' . wp_json_encode( $this->logged ) );
+			$this->assertSame( $headers ? true : false, $this->logged( '(retry after 42 s)' ), $name . ': ' . wp_json_encode( $this->logged ) );
 			$this->assertTrue( $this->logged( 'No order was made' ), $name );
 			$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( WC_Gateway_Monokulo::META_ORDER_ID ), $name );
 
@@ -457,7 +484,7 @@ class CheckoutTest extends MonokuloTestCase {
 	 * once, but the next order reads it afresh.
 	 */
 	public function test_a_refused_key_has_the_entry_read_again() {
-		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 401, Monokulo_Api_Fixtures::problem( 401, 'unauthorized', 'No valid key', '' ) ) ) );
+		$this->monokulo_serves( array( 'POST ' . self::ORDERS => self::response( 401, Monokulo_Api_Fixtures::order_problem( 'unauthorized' ) ) ) );
 		$gateway = self::connected_gateway();
 		foreach ( array( 1, 2 ) as $attempt ) {
 			try {
