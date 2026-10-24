@@ -166,6 +166,29 @@ remembers them all, and Monokulo keeps watching them all:
 Monokulo is non-custodial: refund an overpayment or an expired order's
 funds from your wallet yourself.
 
+Any other event is answered `200` and changes nothing, so a newer Monokulo
+doesn't break the shop (a `4xx` would make Monokulo send it again).
+
+### Test connection
+
+Once connected, the plugin's settings page has a **Test connection**
+button. It follows the API entry's `send-test-webhook` form: Monokulo sends
+the shop's webhook a signed `webhook.test` delivery there and then, and the
+settings page says how it went:
+
+- delivered, with the status the shop answered and how long it took;
+- not delivered, with why (the status or error) and when Monokulo tries
+  again, with a hint when the shop refused the signature or its webhook
+  address wasn't found;
+- or why Monokulo sent none: at most 6 tests a minute for a store (try
+  again in so many seconds), or no webhook for the shop (connect again).
+
+The receiver checks a `webhook.test` like any delivery, answers `200` and
+changes no order. Under the button, **Last test webhook received** shows
+when the last one arrived, signature checked, and its event id, whether it
+came from this button or from *Send a test webhook* on the webhook in your
+Monokulo store's settings. Connecting again clears it.
+
 ## Logs
 
 The plugin logs through WooCommerce (**WooCommerce > Status > Logs**,
@@ -176,8 +199,8 @@ there accepts client logs.
 
 ## Removing the plugin
 
-Deleting the plugin in WordPress removes its settings and the API entry
-it kept. Orders keep their
+Deleting the plugin in WordPress removes its settings, the API entry it
+kept and the last test webhook received. Orders keep their
 Monokulo order ids and notes. Disconnect the shop in Monokulo too (see
 above), so it stops sending webhooks.
 
@@ -219,9 +242,16 @@ the one `scripts/smoke` starts on port 18092.
   checkout through WooCommerce's Store API lands on the Monokulo checkout,
   and the order, read from the API, is pending; a guest on the shop's
   `.onion` address is sent to the onion checkout, or told Tor can't be
-  used when there's none. Nothing is paid, so no webhook is sent (with no
-  Monero node an order never moves, not even to expired): the vectors and
-  the wordpress suite cover deliveries. Monokulo prices from a stand-in
+  used when there's none. Then a test webhook, end to end: the store's
+  secret key follows the entry's `send-test-webhook` form, Monokulo
+  delivers a signed `webhook.test` to the shop (`delivered`, a `2xx`),
+  the plugin's log shows it received that event id with its signature
+  checked, no order changed, and the settings page shows it as the last
+  test received; then **Test connection**, pressed on the real settings
+  page, says it was delivered (two tests per run, under Monokulo's 6 a
+  minute). Nothing is paid, so no order webhook is sent (with no Monero
+  node an order never moves, not even to expired): the vectors and the
+  wordpress suite cover what order deliveries do. Monokulo prices from a stand-in
   for CoinGecko (`tests/Smoke/fake-rates.php`) that rate limits euros, so
   a guest paying in euros meets a real `rates-unavailable` and is asked to
   try again shortly. It also checks the wordpress suite's API fixtures

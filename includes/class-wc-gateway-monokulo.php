@@ -107,6 +107,41 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const META_APPLIED_EVENT_IDS = '_monokulo_applied_webhook_event_ids';
 
 	/**
+	 * The order events this version acts on. Any other event (one a newer
+	 * Monokulo sends) is taken with a 200 and changes nothing.
+	 */
+	const ORDER_EVENTS = array(
+		'order.pending',
+		'order.unconfirmed',
+		'order.confirming',
+		'order.partial',
+		'order.paid',
+		'order.overpaid',
+		'order.expired',
+		'order.cancelled',
+		'order.double_spend_detected',
+		'order.double_spend_reversed',
+	);
+
+	/**
+	 * Monokulo's test delivery: "Send a test webhook" on its dashboard, or
+	 * this plugin's Test connection button. It has no order.
+	 */
+	const TEST_EVENT = 'webhook.test';
+
+	/**
+	 * Option: the last test webhook received, its signature checked:
+	 * `{event_id, created_at, received_at}`.
+	 */
+	const LAST_TEST_OPTION = 'monokulo_last_test_webhook';
+
+	/**
+	 * `admin-post.php?action=monokulo_test_connection`: the Test connection
+	 * button.
+	 */
+	const TEST_CONNECTION_ACTION = 'monokulo_test_connection';
+
+	/**
 	 * Most log entries sent to Monokulo per request: its `send-logs` form
 	 * takes no more.
 	 */
@@ -493,12 +528,12 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * when it was a kept copy it is read again and the form sent once more
 	 * (the order's idempotency key makes that safe).
 	 *
-	 * @param string $name The form's name (`create-order`).
-	 * @param array  $body The JSON body.
+	 * @param string         $name The form's name (`create-order`).
+	 * @param array|stdClass $body The JSON body (a `stdClass` for `{}`).
 	 * @return array{0: string, 1: array|WP_Error} Where it went, and the response.
 	 * @throws Exception When the entry can't be read or has no such form.
 	 */
-	private function submit( string $name, array $body ): array {
+	private function submit( string $name, array|stdClass $body ): array {
 		$this->entry_read_now = false;
 		$form                 = $this->entry_form( $name );
 		$response             = $this->call( $form['method'], $form['target'], $body );
@@ -517,14 +552,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * One call to the API with the store's secret key: a JSON body when
 	 * `$body` is given.
 	 *
-	 * @param string     $method  HTTP method.
-	 * @param string     $url     Where.
-	 * @param array|null $body    The JSON body, if any.
-	 * @param array      $headers More headers.
-	 * @param int        $timeout Seconds to wait.
+	 * @param string              $method  HTTP method.
+	 * @param string              $url     Where.
+	 * @param array|stdClass|null $body    The JSON body, if any (a `stdClass` for `{}`).
+	 * @param array               $headers More headers.
+	 * @param int                 $timeout Seconds to wait.
 	 * @return array|WP_Error The response, or the error when Monokulo couldn't be reached.
 	 */
-	private function call( string $method, string $url, ?array $body = null, array $headers = array(), int $timeout = 30 ) {
+	private function call( string $method, string $url, array|stdClass|null $body = null, array $headers = array(), int $timeout = 30 ) {
 		$args = array(
 			'method'  => $method,
 			'headers' => $headers + array(
@@ -960,11 +995,219 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 						<code><?php echo esc_html( (string) wp_parse_url( $this->onion_api, PHP_URL_HOST ) ); ?></code>
 					</p>
 				<?php endif; ?>
+				<?php if ( $this->has_credentials() ) : ?>
+					<p>
+						<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=' . self::TEST_CONNECTION_ACTION ), self::TEST_CONNECTION_ACTION ) ); ?>" id="<?php echo esc_attr( $field_key ); ?>_test" class="button">
+							<?php esc_html_e( 'Test connection', 'monokulo' ); ?>
+						</a>
+					</p>
+					<p id="<?php echo esc_attr( $field_key ); ?>_last_test"><?php echo esc_html( self::last_test_line() ); ?></p>
+				<?php endif; ?>
 				<?php echo $this->get_description_html( $data ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- WooCommerce escapes it. ?>
 			</td>
 		</tr>
 		<?php
 		return (string) ob_get_clean();
+	}
+
+	/**
+	 * "Last test webhook received: <when> (<event id>)", from what the
+	 * receiver kept, or that none has arrived yet.
+	 */
+	public static function last_test_line(): string {
+		$last = get_option( self::LAST_TEST_OPTION );
+		if ( ! is_array( $last ) || ! is_string( $last['event_id'] ?? null ) ) {
+			return __( 'Last test webhook received: none yet.', 'monokulo' );
+		}
+		return sprintf(
+			/* translators: 1: date and time, 2: the test event's id */
+			__( 'Last test webhook received: %1$s (%2$s).', 'monokulo' ),
+			self::when( (int) ( $last['received_at'] ?? 0 ) ),
+			$last['event_id']
+		);
+	}
+
+	/**
+	 * A time, in the shop's date and time formats and time zone.
+	 *
+	 * @param int $timestamp Unix seconds.
+	 */
+	private static function when( int $timestamp ): string {
+		return (string) wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $timestamp );
+	}
+
+	/**
+	 * `admin-post.php?action=monokulo_test_connection`: the Test connection
+	 * button. Sends the test, keeps what it said for the admin, and sends
+	 * the browser back to the settings page to show it. Only for shop
+	 * managers, with the button's nonce.
+	 */
+	public function handle_test_connection(): void {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'monokulo' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( self::TEST_CONNECTION_ACTION );
+		set_transient( self::test_result_transient(), $this->test_connection(), 10 * MINUTE_IN_SECONDS );
+		wp_safe_redirect( self::settings_url( array( 'monokulo_tested' => '1' ) ) );
+		exit;
+	}
+
+	/**
+	 * The transient holding the Test connection button's result, for the
+	 * admin who pressed it.
+	 */
+	private static function test_result_transient(): string {
+		return 'monokulo_test_result_' . get_current_user_id();
+	}
+
+	/**
+	 * Follows the entry's `send-test-webhook` form with `{}`: Monokulo sends
+	 * this shop's webhook a signed `webhook.test` and answers how it went.
+	 *
+	 * @return array{ok: bool, message: string} Whether it was delivered, and
+	 *         what to tell the admin.
+	 */
+	public function test_connection(): array {
+		if ( ! $this->has_credentials() ) {
+			return array(
+				'ok'      => false,
+				'message' => __( 'Connect the store first.', 'monokulo' ),
+			);
+		}
+		try {
+			$this->entry_read_now = false;
+			$offered              = is_array( $this->entry()['_templates']['send-test-webhook'] ?? null );
+		} catch ( Exception $e ) {
+			return array(
+				'ok'      => false,
+				'message' => __( 'Your Monokulo could not be reached from this shop\'s server, or did not answer. The log says why.', 'monokulo' ),
+			);
+		}
+		if ( ! $offered ) {
+			$this->log( sprintf( 'The API entry at %s offers no "send-test-webhook" form.', $this->api ), 'warning' );
+			return array(
+				'ok'      => false,
+				'message' => __( 'Your Monokulo cannot send test webhooks: it is older than this plugin. Ask its operator to update it.', 'monokulo' ),
+			);
+		}
+		try {
+			list( $url, $response ) = $this->submit( 'send-test-webhook', new stdClass() );
+		} catch ( Exception $e ) {
+			return array(
+				'ok'      => false,
+				'message' => __( 'Your Monokulo could not be reached from this shop\'s server, or did not answer. The log says why.', 'monokulo' ),
+			);
+		}
+		if ( is_wp_error( $response ) ) {
+			$this->log( sprintf( 'Test connection request to %s failed: %s', $url, $response->get_error_message() ), 'error' );
+			return array(
+				'ok'      => false,
+				'message' => __( 'Your Monokulo could not be reached from this shop\'s server. Check its address, then try again.', 'monokulo' ),
+			);
+		}
+		$result = self::test_result( $response );
+		$this->log( sprintf( 'Test connection via %s: %s', $url, $result['message'] ), $result['ok'] ? 'info' : 'warning' );
+		return $result;
+	}
+
+	/**
+	 * What the admin is told about the `send-test-webhook` form's answer:
+	 *
+	 * - delivered: the status this shop answered, and how long it took;
+	 * - not delivered: why, and when Monokulo tries again;
+	 * - `rate-limited`: how long to wait; `not-found`: connect again;
+	 *   another problem: what Monokulo said.
+	 *
+	 * @param array $response The response.
+	 * @return array{ok: bool, message: string}
+	 */
+	public static function test_result( array $response ): array {
+		$status = (int) wp_remote_retrieve_response_code( $response );
+		$raw    = (string) wp_remote_retrieve_body( $response );
+		$body   = json_decode( $raw, true );
+
+		if ( 200 === $status && is_array( $body ) && is_bool( $body['delivered'] ?? null ) ) {
+			$event = is_string( $body['event_id'] ?? null ) ? $body['event_id'] : '';
+			$code  = is_int( $body['status'] ?? null ) ? $body['status'] : null;
+			$ms    = is_int( $body['duration_ms'] ?? null ) ? $body['duration_ms'] : 0;
+			if ( $body['delivered'] ) {
+				return array(
+					'ok'      => true,
+					'message' => sprintf(
+						/* translators: 1: HTTP status, 2: milliseconds, 3: the test event's id */
+						__( 'Test webhook delivered: this shop answered HTTP %1$d in %2$d ms (%3$s).', 'monokulo' ),
+						(int) $code,
+						$ms,
+						$event
+					),
+				);
+			}
+			$error   = is_string( $body['error'] ?? null ) ? $body['error'] : __( 'no answer', 'monokulo' );
+			$message = sprintf(
+				/* translators: 1: what went wrong, 2: the test event's id */
+				__( 'The test webhook was not delivered: %1$s (%2$s).', 'monokulo' ),
+				$error,
+				$event
+			);
+			if ( 401 === $code ) {
+				$message .= ' ' . __( 'This shop refused its signature: connect again, so the shop and Monokulo share the same webhook signing secret.', 'monokulo' );
+			} elseif ( 404 === $code ) {
+				$message .= ' ' . __( 'This shop\'s webhook address was not found: check that the WordPress REST API is reachable, then connect again.', 'monokulo' );
+			}
+			if ( is_int( $body['next_attempt_at'] ?? null ) ) {
+				/* translators: %s: date and time */
+				$message .= ' ' . sprintf( __( 'Monokulo tries again at %s.', 'monokulo' ), self::when( $body['next_attempt_at'] ) );
+			}
+			return array(
+				'ok'      => false,
+				'message' => $message,
+			);
+		}
+
+		$problem = self::problem( $raw );
+		$name    = (string) preg_replace( '#\A.*/#', '', $problem['type'] );
+		if ( 'rate-limited' === $name ) {
+			$wait    = self::retry_after( $response, $raw );
+			$message = null !== $wait
+				/* translators: %d: seconds */
+				? sprintf( __( 'Monokulo sends at most 6 test webhooks a minute for a store. Try again in %d seconds.', 'monokulo' ), $wait )
+				: __( 'Monokulo sends at most 6 test webhooks a minute for a store. Try again in a minute.', 'monokulo' );
+		} elseif ( 'not-found' === $name ) {
+			$message = __( 'Monokulo has no webhook for this shop to test. Connect again to register it.', 'monokulo' );
+		} elseif ( 401 === $status ) {
+			$message = __( 'Monokulo did not accept the store secret key. Connect again.', 'monokulo' );
+		} else {
+			$message = __( 'Monokulo did not send a test webhook.', 'monokulo' );
+			if ( '' !== $problem['detail'] ) {
+				/* translators: %s: what Monokulo said */
+				$message .= ' ' . sprintf( __( 'Monokulo says: %s', 'monokulo' ), $problem['detail'] );
+			} else {
+				/* translators: %d: HTTP status */
+				$message .= ' ' . sprintf( __( 'It answered HTTP %d.', 'monokulo' ), $status );
+			}
+		}
+		return array(
+			'ok'      => false,
+			'message' => $message,
+		);
+	}
+
+	/**
+	 * Shows the Test connection button's result, once, on the gateway's
+	 * settings page.
+	 */
+	public static function render_test_notice(): void {
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- only picks which notice to show.
+		if ( 'wc-settings' !== ( $_GET['page'] ?? '' ) || self::ID !== ( $_GET['section'] ?? '' ) || ! isset( $_GET['monokulo_tested'] ) ) {
+			return;
+		}
+		// phpcs:enable
+		$result = get_transient( self::test_result_transient() );
+		delete_transient( self::test_result_transient() );
+		if ( ! is_array( $result ) || ! is_string( $result['message'] ?? null ) ) {
+			return;
+		}
+		printf( '<div class="notice %s is-dismissible monokulo-test-result"><p>%s</p></div>', esc_attr( empty( $result['ok'] ) ? 'notice-error' : 'notice-success' ), esc_html( $result['message'] ) );
 	}
 
 	/**
@@ -1001,7 +1244,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	/**
 	 * Checks the nonce (used up whatever happens: it must be one this admin
 	 * was given), redeems the token at `/finish`, saves the connection and
-	 * turns the gateway on. A failure changes no setting.
+	 * turns the gateway on, forgetting the last test webhook received. A
+	 * failure changes no setting.
 	 *
 	 * @param array{token?: string, nonce?: string} $query The connect flow's `token` and `nonce`.
 	 * @return string The settings page, with `monokulo_connected` or
@@ -1035,6 +1279,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$this->update_option( 'webhook_signing_secret', (string) ( $finish['webhook_signing_secret'] ?? '' ) );
 		$this->update_option( 'enabled', 'yes' );
 		$this->forget_entry();
+		// A test received before belongs to the webhook of the connection before.
+		delete_option( self::LAST_TEST_OPTION );
 
 		return self::settings_url( array( 'monokulo_connected' => '1' ) );
 	}
@@ -1121,13 +1367,15 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * Handles one webhook delivery and says which status to answer:
 	 *
 	 * - 401: the signature is missing or doesn't check out;
-	 * - 400: signed, but not a webhook envelope;
+	 * - 400: signed, but not a webhook envelope (or an order event with no
+	 *   order id);
 	 * - 404: no order here for that Monokulo order;
 	 * - 500: applying it failed, so the retry applies it;
-	 * - 200: applied, already applied before, or an event this version
-	 *   doesn't know (logged).
+	 * - 200: applied, already applied before, a `webhook.test` (kept as the
+	 *   last test received, no order changed), or an event this version
+	 *   doesn't know (logged, nothing changed).
 	 *
-	 * Anything but a 2xx is retried by Monokulo.
+	 * Anything but a 2xx is retried by Monokulo, and fails a test.
 	 *
 	 * @param string $body      The request body as sent.
 	 * @param string $signature The `X-Monokulo-Signature` header, or ''.
@@ -1139,11 +1387,36 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		}
 
 		$event = json_decode( $body, true );
-		foreach ( array( 'event', 'event_id', 'order_id' ) as $field ) {
+		foreach ( array( 'event', 'event_id' ) as $field ) {
 			if ( ! is_array( $event ) || empty( $event[ $field ] ) || ! is_string( $event[ $field ] ) ) {
 				$this->log( 'Webhook refused: signed, but not a webhook envelope: ' . $body, 'error' );
 				return 400;
 			}
+		}
+
+		if ( self::TEST_EVENT === $event['event'] ) {
+			$created_at = is_int( $event['created_at'] ?? null ) ? $event['created_at'] : 0;
+			update_option(
+				self::LAST_TEST_OPTION,
+				array(
+					'event_id'    => $event['event_id'],
+					'created_at'  => $created_at,
+					'received_at' => time(),
+				),
+				false
+			);
+			$this->log( sprintf( 'Test webhook %s received, signature verified. No order changes.', $event['event_id'] ) );
+			return 200;
+		}
+
+		if ( ! in_array( $event['event'], self::ORDER_EVENTS, true ) ) {
+			$this->log( sprintf( 'Webhook %s: unknown event "%s", accepted and ignored.', $event['event_id'], $event['event'] ), 'warning' );
+			return 200;
+		}
+
+		if ( empty( $event['order_id'] ) || ! is_string( $event['order_id'] ) ) {
+			$this->log( 'Webhook refused: signed, but an order event with no order id: ' . $body, 'error' );
+			return 400;
 		}
 
 		$order = self::find_order( $event['order_id'] );
@@ -1235,8 +1508,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *   (an overpayment, or another request paid too), is a note, for the
 	 *   merchant to refund.
 	 *
-	 * Unknown events are logged and ignored, so a newer Monokulo doesn't
-	 * break the shop.
+	 * Only events in `ORDER_EVENTS` reach it.
 	 *
 	 * @param WC_Order $order The order.
 	 * @param array    $event The decoded webhook body.
@@ -1259,12 +1531,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'order.double_spend_detected' => sprintf( __( 'Monokulo: FRAUD ALERT. A payment to this order was double-spent and no longer counts (transaction %s). If this changed the order status, that is a separate note. Check this order before sending anything.', 'monokulo' ), $txid ),
 			/* translators: %s: transaction id */
 			'order.double_spend_reversed' => sprintf( __( 'Monokulo: the earlier double-spend alert for this order (transaction %s) was wrong and is withdrawn. If this changed the order status, that is a separate note.', 'monokulo' ), $txid ),
-			default                       => null,
+			default                       => '',
 		};
-		if ( null === $note ) {
-			$this->log( sprintf( 'Webhook %s: unknown event "%s", accepted and ignored.', $event['event_id'], $type ), 'warning' );
-			return;
-		}
 
 		$page = $event['_links']['mk:dashboard-order']['href'] ?? null;
 		if ( is_string( $page ) && preg_match( '#\Ahttps?://#i', $page ) ) {

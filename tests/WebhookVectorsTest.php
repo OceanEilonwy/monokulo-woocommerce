@@ -26,6 +26,13 @@ class WebhookVectorsTest extends MonokuloTestCase {
 		return $cases;
 	}
 
+	/**
+	 * The deliveries about an order: all but `webhook.test`.
+	 */
+	public function order_deliveries(): array {
+		return array_filter( $this->deliveries(), static fn( array $case ) => 'webhook.test' !== $case[0]['headers']['X-Monokulo-Event'] );
+	}
+
 	public function refusals(): array {
 		$cases = array();
 		foreach ( self::vectors()['refuse'] as $refuse ) {
@@ -53,8 +60,31 @@ class WebhookVectorsTest extends MonokuloTestCase {
 		$this->assertFalse( self::verifies( $refuse ), $refuse['why'] );
 	}
 
+	public function test_every_event_in_the_vectors_is_one_the_receiver_knows() {
+		$events = array_unique( array_map( static fn( array $case ) => $case[0]['headers']['X-Monokulo-Event'], array_values( $this->deliveries() ) ) );
+		$this->assertContains( 'webhook.test', $events );
+		$this->assertSame( array(), array_values( array_diff( $events, WC_Gateway_Monokulo::ORDER_EVENTS, array( 'webhook.test' ) ) ) );
+	}
+
 	/**
-	 * @dataProvider deliveries
+	 * The test delivery is taken, kept as the last test received, and
+	 * changes no order.
+	 */
+	public function test_the_test_delivery_changes_no_order() {
+		$delivery = array_values( array_diff_key( $this->deliveries(), $this->order_deliveries() ) )[0][0];
+		$order    = self::order_paying( 'order_1' );
+		self::connected_gateway();
+
+		$this->assertSame( 200, $this->deliver( $delivery['body'] ) );
+		$this->assertSame( $delivery['headers']['X-Monokulo-Event-Id'], get_option( WC_Gateway_Monokulo::LAST_TEST_OPTION )['event_id'] );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( 'pending', $order->get_status() );
+		$this->assertSame( '', self::notes( $order ) );
+		$this->assertSame( 200, $this->deliver( $delivery['body'] ), 'Again: taken.' );
+	}
+
+	/**
+	 * @dataProvider order_deliveries
 	 */
 	public function test_each_delivery_moves_the_order( array $delivery ) {
 		$event = json_decode( $delivery['body'], true );

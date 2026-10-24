@@ -25,14 +25,22 @@ require_once dirname(__DIR__) . '/fixtures/class-monokulo-api-fixtures.php';
  * 5. a guest on the shop's onion address is sent to the onion checkout,
  *    or, with no onion address, told Monero can't be paid over Tor;
  * 6. the shop's webhook address answers, and refuses an unsigned delivery;
+ *    Monokulo's `send-test-webhook` form, followed with the store's secret
+ *    key, has Monokulo send the shop a signed `webhook.test`: delivered,
+ *    answered 2xx, the plugin kept that event id after checking its
+ *    signature, no order changed, and the settings page shows the "Last
+ *    test webhook received" line; then the merchant presses Test
+ *    connection on the settings page and is told it was delivered (two
+ *    tests per Monokulo, under its 6 a minute);
  * 7. with the shop in euros, which Monokulo's stand-in rate provider
  *    (tests/Smoke/fake-rates.php) rate limits, Monokulo answers
  *    `rates-unavailable` and the customer is asked to try again shortly;
  *    the merchant's log says when Monokulo said to try again.
  *
- * No webhook is sent: with no Monero node, Monokulo's orders never move
- * (not even to expired). The webhook vectors and the unit tests cover
- * what deliveries do, the dashboard link in their notes included.
+ * No order webhook is sent: with no Monero node, Monokulo's orders never
+ * move (not even to expired). The webhook vectors and the unit tests
+ * cover what order deliveries do, the dashboard link in their notes
+ * included; the test webhook covers the delivery itself, end to end.
  *
  * And the unit tests' API fixtures are what this Monokulo's OpenAPI
  * document describes.
@@ -71,6 +79,7 @@ final class MonokuloSmokeTest extends TestCase {
 		$checkout = (string)$placed->json()['payment_result']['redirect_url'];
 		$this->assertMatchesRegularExpression('#\A' . preg_quote($this->monokulo, '#') . '/checkout/([^/?]+)\z#', $checkout);
 		$orderId = basename($checkout);
+		$shopOrder = (int)$placed->json()['order_id'];
 
 		// The Monokulo checkout loads, and the new order is waiting for payment.
 		$page = $this->browser->get($checkout);
@@ -95,6 +104,8 @@ final class MonokuloSmokeTest extends TestCase {
 		$webhook = $this->browser->post(self::SHOP . '?rest_route=/monokulo/v1/webhook', '{"event":"order.paid"}', ['Content-Type' => 'application/json']);
 		$this->assertSame(401, $webhook->status, $webhook->body);
 
+		$this->sendATestWebhook($shopOrder);
+
 		// No exchange rate for the order's currency: Monokulo makes no order,
 		// and the customer is asked to try again shortly.
 		$logged = substr_count(self::merchantLog(), 'rates-unavailable) (Monokulo has no exchange rate');
@@ -108,6 +119,64 @@ final class MonokuloSmokeTest extends TestCase {
 		} finally {
 			$this->setShopCurrency('USD');
 		}
+	}
+
+	/**
+	 * A test webhook, end to end: through the API's `send-test-webhook`
+	 * form (found in the entry, never a fixed path), then the settings
+	 * page's Test connection button.
+	 */
+	private function sendATestWebhook(int $shopOrder): void {
+		$settingsUrl = self::SHOP . 'wp-admin/admin.php?page=wc-settings&tab=checkout&section=monokulo';
+		$settings = $this->browser->get($settingsUrl);
+		$secret = (string)($settings->form('')['fields']['woocommerce_monokulo_secret_token'] ?? '');
+		$this->assertStringStartsWith('sk_', $secret, 'the settings page has the store secret key');
+		$this->assertStringContainsString('Last test webhook received: none yet.', $settings->text());
+		$applied = substr_count(self::merchantLog(), ') applied to order ');
+		$status = $this->shopOrderStatus($shopOrder);
+
+		$sk = ['Authorization' => 'Bearer ' . $secret, 'Accept' => 'application/prs.hal-forms+json, application/problem+json'];
+		$entry = $this->browser->get($this->monokulo . '/api/v1', $sk);
+		$this->assertSame(200, $entry->status, $entry->body);
+		$form = $entry->json()['_templates']['send-test-webhook'] ?? null;
+		$this->assertIsArray($form, 'the entry offers the store secret key send-test-webhook');
+		$target = preg_replace('#\A(https?://[^/]+).*\z#', '$1', $this->monokulo) . $form['target'];
+		$sent = $this->browser->post($target, '{}', $sk + ['Content-Type' => 'application/json']);
+		$this->assertSame(200, $sent->status, $sent->body);
+		$test = $sent->json();
+		$this->assertTrue($test['delivered'], $sent->body);
+		$this->assertGreaterThanOrEqual(200, $test['status']);
+		$this->assertLessThan(300, $test['status']);
+		$this->assertMatchesRegularExpression('/\Aevt_\w+\z/', $test['event_id']);
+
+		// The receiver checked the signature and kept that event id, and changed no order.
+		$this->assertStringContainsString('Test webhook ' . $test['event_id'] . ' received, signature verified.', self::merchantLog());
+		$this->assertSame($applied, substr_count(self::merchantLog(), ') applied to order '), 'no order event applied');
+		$this->assertSame($status, $this->shopOrderStatus($shopOrder), 'the order is as it was');
+		$settings = $this->browser->get($settingsUrl);
+		$this->assertMatchesRegularExpression('/Last test webhook received: [^<(]+ \(' . preg_quote($test['event_id'], '/') . '\)\./', $settings->text());
+
+		// The merchant presses Test connection: the same, told on the settings page.
+		$this->assertMatchesRegularExpression('/<a href="([^"]+)" id="woocommerce_monokulo_connect_test"/', $settings->body);
+		preg_match('/<a href="([^"]+)" id="woocommerce_monokulo_connect_test"/', $settings->body, $m);
+		$pressed = $this->browser->get(html_entity_decode($m[1]));
+		$this->assertStringContainsString('monokulo_tested=1', (string)$pressed->location(), $pressed->text());
+		$told = $this->browser->follow($pressed);
+		$this->assertSame(200, $told->status, $told->text());
+		$this->assertMatchesRegularExpression('/notice-success is-dismissible monokulo-test-result"><p>Test webhook delivered: this shop answered HTTP 200 in \d+ ms \((evt_\w+)\)\./', $told->body);
+		preg_match('/Test webhook delivered: this shop answered HTTP 200 in \d+ ms \((evt_\w+)\)\./', $told->body, $m);
+		$this->assertNotSame($test['event_id'], $m[1], 'a second test');
+		$this->assertStringContainsString('Test webhook ' . $m[1] . ' received, signature verified.', self::merchantLog());
+		$this->assertSame($status, $this->shopOrderStatus($shopOrder), 'the order is still as it was');
+	}
+
+	/** A shop order's status, as its page in WooCommerce's admin shows it. */
+	private function shopOrderStatus(int $id): string {
+		$page = $this->browser->follow($this->browser->get(self::SHOP . 'wp-admin/post.php?post=' . $id . '&action=edit'));
+		$this->assertSame(200, $page->status, $page->text());
+		$this->assertMatchesRegularExpression('#<option value="wc-([a-z-]+)"\s+selected#', $page->body, 'the order page shows its status');
+		preg_match('#<option value="wc-([a-z-]+)"\s+selected#', $page->body, $m);
+		return $m[1];
 	}
 
 	/** The plugin's WooCommerce logs (this suite runs in the shop's container). */
@@ -161,6 +230,14 @@ final class MonokuloSmokeTest extends TestCase {
 		$logs = self::deref($doc, reset($doc['paths']['/api/v1/logs']['post']['requestBody']['content'])['schema']);
 		$this->assertArrayHasKey('entries', $logs['properties'] ?? [], 'send-logs takes entries');
 
+		// The test connection's answers, delivered or not, and its form.
+		$test = $doc['paths']['/api/v1/webhook-tests']['post'] ?? null;
+		$this->assertIsArray($test, 'POST /api/v1/webhook-tests');
+		foreach ([[true, 500], [false, 500], [false, 0]] as [$delivered, $status]) {
+			$this->assertMatchesFixture($doc, self::okSchema($doc, $test, '200'), \Monokulo_Api_Fixtures::webhook_test('', $delivered, $status), 'webhook test');
+		}
+		$this->assertArrayHasKey('Retry-After', $test['responses']['429']['headers'] ?? [], 'a rate-limited test says when to try again');
+
 		// The pages the plugin sends people to.
 		foreach (['/checkout/{order_id}' => 'mk:checkout', '/stores/{id}/orders/{order_id}' => 'mk:dashboard-order'] as $path => $rel) {
 			$this->assertArrayHasKey('text/html', $doc['paths'][$path]['get']['responses']['200']['content'] ?? [], "$rel is a page");
@@ -206,6 +283,20 @@ final class MonokuloSmokeTest extends TestCase {
 				"the order's links, sk$suffix"
 			);
 
+			$test = self::example($doc, '/api/v1/webhook-tests', 'post', '200', 'sk' . $suffix);
+			$fixture = \Monokulo_Api_Fixtures::webhook_test();
+			$this->assertEqualsCanonicalizing(array_keys($fixture), array_keys($test), "the test connection's answer, sk$suffix");
+			$this->assertSame(self::hrefs($fixture), self::hrefs($test), "the test connection's links, sk$suffix");
+			$this->assertSame(self::forms($fixture), self::forms($test), "the test connection's form, sk$suffix");
+			// Each recording has its own event id.
+			$this->assertMatchesRegularExpression('/\Aevt_\w+\z/', $test['event_id']);
+			$fields = static function (array $body): array {
+				$body = array_diff_key($body, ['_links' => 1, '_templates' => 1, 'event_id' => 1]);
+				ksort($body);
+				return $body;
+			};
+			$this->assertSame($fields($fixture), $fields($test), "the test connection's fields, sk$suffix");
+
 			$finish = self::example($doc, '/plugins/connect/{slug}/finish', 'post', '200', 'no-key' . $suffix);
 			$fixture = \Monokulo_Api_Fixtures::finish('', $onion);
 			$this->assertEqualsCanonicalizing(array_keys($fixture), array_keys($finish), "the handshake's answer, no-key$suffix");
@@ -226,6 +317,7 @@ final class MonokuloSmokeTest extends TestCase {
 			['/api/v1/orders', 'post', \Monokulo_Api_Fixtures::ORDER_PROBLEMS],
 			['/api/v1', 'get', \Monokulo_Api_Fixtures::ENTRY_PROBLEMS],
 			['/plugins/connect/{slug}/finish', 'post', \Monokulo_Api_Fixtures::FINISH_PROBLEMS],
+			['/api/v1/webhook-tests', 'post', \Monokulo_Api_Fixtures::WEBHOOK_TEST_PROBLEMS],
 		];
 		foreach ($routes as [$path, $method, $fixtures]) {
 			// Every problem the route lists is one the plugin was tested with.

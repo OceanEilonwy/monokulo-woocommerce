@@ -1,11 +1,11 @@
 <?php
 /**
- * Removes the plugin's settings, the API entry it kept and the version
- * its upgrade last ran for, when it is
- * deleted. Orders keep their
+ * Removes the plugin's settings, the API entry it kept, the last test
+ * webhook it received and the version its upgrade last ran for, when it
+ * is deleted. Orders keep their
  * Monokulo order ids and notes. The store, its keys and its webhook stay
- * in Monokulo until the shop is disconnected there. Connect nonces expire
- * on their own within ten minutes.
+ * in Monokulo until the shop is disconnected there. Connect nonces and Test
+ * connection results expire on their own within ten minutes.
  *
  * @package Monokulo
  */
@@ -19,3 +19,4 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 delete_option( 'woocommerce_monokulo_settings' );
 delete_option( 'monokulo_api_entry' );
 delete_option( 'monokulo_version' );
+delete_option( 'monokulo_last_test_webhook' );
